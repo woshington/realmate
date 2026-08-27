@@ -10,6 +10,7 @@ dependencies = [
     "openai>=1.0",
     "celery>=5.4",
     "redis>=5.0",
+    "djangorestframework>=3.18.0",
 ]
 
 [dependency-groups]

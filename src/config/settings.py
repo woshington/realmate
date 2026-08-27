@@ -78,6 +78,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
+# --- OpenAI ---
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TIMEOUT = float(os.environ.get("OPENAI_TIMEOUT", "30"))
+OPENAI_MAX_TOOL_ROUNDS = int(os.environ.get("OPENAI_MAX_TOOL_ROUNDS", "5"))
+
 # --- Logging ---
 LOGGING = {
     "version": 1,
