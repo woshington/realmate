@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from celery.schedules import crontab
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = os.environ.get(
@@ -17,6 +19,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework",
+    "properties",
+    "conversations",
+    "webhooks",
 ]
 
 MIDDLEWARE = [
@@ -78,6 +84,21 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
+CELERY_BEAT_SCHEDULE = {
+    "carregar-imoveis-diariamente": {
+        "task": "properties.tasks.load_properties",
+        "schedule": crontab(hour=0, minute=0),
+    },
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+}
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 # --- Logging ---
 LOGGING = {
     "version": 1,
@@ -99,3 +120,12 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+
+DEBOUNCE_WINDOW_SECONDS = 10
+
+AGENT_HISTORY_MESSAGE_LIMIT = 30
+
+DATA_DIR = BASE_DIR / "data"
+PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"
+PROPERTIES_JSON_PATH = DATA_DIR / "imoveis_resumo.json"
