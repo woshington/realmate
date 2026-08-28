@@ -67,9 +67,6 @@ class Message(TimestampedModel):
     class Meta:
         verbose_name = "mensagem"
         verbose_name_plural = "mensagens"
-        # Numa rajada as mensagens compartilham o mesmo `timestamp` de origem;
-        # `id` (monotônico) garante a ordem cronológica exigida pela API.
-        ordering = ["timestamp", "id"]
         indexes = [
             models.Index(
                 fields=["conversation", "timestamp"],

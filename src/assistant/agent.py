@@ -1,28 +1,33 @@
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models import Model, get_user_agent
+from pydantic_ai.models import Model
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.gateway import gateway_provider
-from django.conf import settings
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.ollama import OllamaProvider
+from config import settings
 
 from assistant import SYSTEM_PROMPT
 from assistant.schemas import AgentReply
-from assistant.tools import search_properties
+from assistant.tools import AssistantDeps, search_properties, faq_properties
 
 
 def build_model() -> Model:
     if settings.DEBUG:
-        return OllamaModel('qwen3')
+        return OllamaModel(
+            settings.OLLAMA_MODEL,
+            provider=OllamaProvider(base_url=settings.OLLAMA_BASE_URL),
+        )
 
-    provider = gateway_provider('openai', api_key=settings.OPENAI_API_KEY)
+    provider = OpenAIProvider(api_key=settings.OPENAI_API_KEY)
     return OpenAIChatModel('gpt-5.2', provider=provider)
 
 
-def get_agent() -> Agent[str, AgentReply]:
-    return Agent[str, AgentReply](
+def get_agent() -> Agent[AssistantDeps, AgentReply]:
+    return Agent[AssistantDeps, AgentReply](
         model=build_model(),
-        deps_type=str,
-        tools=[search_properties],
+        deps_type=AssistantDeps,
+        tools=[search_properties, faq_properties],
         output_type=AgentReply,
         system_prompt=SYSTEM_PROMPT,
+
     )

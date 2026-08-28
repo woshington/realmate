@@ -20,7 +20,12 @@ x-base: &base
     POSTGRES_PORT: 5432
     REDIS_URL: redis://redis:6379/0
     DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+    OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3}
     PYTHONPATH: /app/src
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   depends_on:
     - db
     - redis

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -5,11 +6,14 @@ from uuid import uuid4
 
 import pytest
 from django.conf import settings
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
+from assistant import FALLBACK_MESSAGE
 from assistant.schemas import AgentReply, PropertyOutput
+from assistant.tools import AssistantDeps
 from conversations.enums import MessageRole
-from conversations.models import Message
+from conversations.models import Message, PropertyRecommendation
 from conversations.services import (
     get_recent_messages,
     has_newer_customer_message,
@@ -148,7 +152,21 @@ def test_conversa_e_passada_como_dependencia_do_agente(fake_agent: Any) -> None:
         conversation_id=message.conversation.pk, trigger_message_id=message.pk
     )
 
-    assert fake_agent.run_sync.call_args.kwargs["deps"] == str(message.conversation.pk)
+    assert fake_agent.run_sync.call_args.kwargs["deps"] == AssistantDeps(
+        conversation_id=message.conversation.pk
+    )
+
+
+def test_agente_roda_com_teto_de_requisicoes(fake_agent: Any) -> None:
+    """Sem teto, um agente que não converge chama a OpenAI em loop."""
+    message = ingest("Oi", 0)
+
+    process_conversation(
+        conversation_id=message.conversation.pk, trigger_message_id=message.pk
+    )
+
+    limits = fake_agent.run_sync.call_args.kwargs["usage_limits"]
+    assert limits.request_limit == settings.AGENT_REQUEST_LIMIT
 
 
 def test_historico_vai_em_ordem_cronologica_e_sem_a_mensagem_do_prompt(
@@ -213,6 +231,34 @@ def test_task_superada_nao_chama_a_ia(fake_agent: Any) -> None:
     )
 
     fake_agent.run_sync.assert_not_called()
+
+
+def test_agente_que_estoura_o_teto_responde_o_cliente(
+    fake_agent: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """O teto protege a conta, mas não pode deixar o cliente sem resposta."""
+    fake_agent.run_sync.side_effect = UsageLimitExceeded("request_limit")
+    message = ingest("Oi", 0)
+
+    with caplog.at_level(logging.WARNING):
+        process_conversation(
+            conversation_id=message.conversation.pk, trigger_message_id=message.pk
+        )
+
+    resposta = Message.objects.filter(role=MessageRole.ASSISTANT).get()
+    assert resposta.content == FALLBACK_MESSAGE
+    assert "limite" in caplog.text
+
+
+def test_teto_estourado_nao_registra_recomendacao(fake_agent: Any) -> None:
+    fake_agent.run_sync.side_effect = UsageLimitExceeded("request_limit")
+    message = ingest("Oi", 0)
+
+    process_conversation(
+        conversation_id=message.conversation.pk, trigger_message_id=message.pk
+    )
+
+    assert not PropertyRecommendation.objects.exists()
 
 
 def test_resposta_da_ia_e_registrada_no_log(

@@ -99,6 +99,11 @@ REST_FRAMEWORK = {
 }
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3")
+
+AGENT_REQUEST_LIMIT = 3
 # --- Logging ---
 LOGGING = {
     "version": 1,
@@ -129,3 +134,4 @@ AGENT_HISTORY_MESSAGE_LIMIT = 30
 DATA_DIR = BASE_DIR / "data"
 PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"
 PROPERTIES_JSON_PATH = DATA_DIR / "imoveis_resumo.json"
+FAQ_JSON_PATH = DATA_DIR / "perguntas_frequentes.json"

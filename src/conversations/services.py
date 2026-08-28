@@ -8,6 +8,7 @@ from google.protobuf import timestamp
 
 from conversations.enums import MessageRole
 from conversations.models import Conversation, Message
+from properties.models import Property
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +33,8 @@ def register_customer_message(
         external_id=external_id,
         defaults={
             "conversation": conversation,
-            "role": role,
             "content": content,
+            "role": role,
             "timestamp": timestamp,
         },
     )
@@ -81,4 +82,6 @@ def get_recent_messages(
 
 def add_recommendations(*, conversation_id: int, property_codes: list[str]) -> None:
     conversation = Conversation.objects.get(id=conversation_id)
-    conversation.recommended_properties.add(*property_codes)
+    conversation.recommended_properties.add(
+        *Property.objects.filter(code__in=property_codes)
+    )

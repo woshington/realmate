@@ -1,9 +1,14 @@
 import logging
+import uuid
 
 from celery import shared_task
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.usage import UsageLimits
 from django.conf import settings
 
-from assistant import agent
+from assistant import FALLBACK_MESSAGE, agent
+from assistant.schemas import AgentReply
+from assistant.tools import AssistantDeps
 from assistant.history import to_model_messages
 from conversations.enums import MessageRole
 from conversations.models import Message
@@ -54,12 +59,23 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
     )
 
     user_agent = agent.get_agent()
-    result = user_agent.run_sync(
-        trigger.content,
-        message_history=to_model_messages(history),
-        deps=str(conversation_id),
-    )
-    reply = result.output
+    try:
+        result = user_agent.run_sync(
+            trigger.content,
+            message_history=to_model_messages(history),
+            deps=AssistantDeps(conversation_id=conversation_id),
+            usage_limits=UsageLimits(request_limit=settings.AGENT_REQUEST_LIMIT),
+        )
+    except UsageLimitExceeded:
+        logger.warning(
+            "Conversa %s: agente atingiu o limite de %s requisições sem "
+            "concluir; respondendo com a mensagem de fallback.",
+            conversation_id,
+            settings.AGENT_REQUEST_LIMIT,
+        )
+        reply = AgentReply(message=FALLBACK_MESSAGE)
+    else:
+        reply = result.output
 
     logger.info(
         "Conversa %s: resposta da IA obtida com %s imóvel(is) recomendado(s): %s",
@@ -69,7 +85,7 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
     )
 
     register_customer_message(
-        external_id=trigger.external_id,
+        external_id=str(uuid.uuid4()),
         user_phone=trigger.conversation.user_phone,
         content=reply.message,
         timestamp=trigger.timestamp,
