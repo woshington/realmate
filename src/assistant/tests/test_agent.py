@@ -16,6 +16,8 @@ from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.usage import UsageLimits
 
+from django.core.exceptions import ImproperlyConfigured
+
 from assistant.agent import build_model, get_agent
 from assistant.schemas import AgentReply
 from assistant.tools import MAX_SEARCHES_PER_RUN, AssistantDeps
@@ -258,14 +260,81 @@ def test_limite_de_requisicoes_interrompe_o_agente_em_loop(
     assert chamadas["n"] == 3
 
 
+def test_resposta_em_texto_puro_vira_reply_valida(conversation: Conversation) -> None:
+    """Regressão: modelo que responde em texto estourava UnexpectedModelBehavior."""
+    model, _ = scripted_model(
+        ModelResponse(parts=[TextPart("Temos duas opções em Boa Viagem.")])
+    )
+
+    result = run(model, "quero alugar", conversation)
+
+    assert result.output.message == "Temos duas opções em Boa Viagem."
+    assert result.output.recommended_properties == []
+
+
+def test_texto_com_json_do_schema_e_aproveitado(conversation: Conversation) -> None:
+    """gpt-oss às vezes despeja o JSON como texto; o cliente não pode ver isso."""
+    model, _ = scripted_model(
+        ModelResponse(
+            parts=[TextPart('{"message": "Oi!", "recommended_properties": []}')]
+        )
+    )
+
+    result = run(model, "oi", conversation)
+
+    assert result.output.message == "Oi!"
+
+
+def test_texto_puro_depois_de_uma_busca_tambem_e_aceito(
+    conversation: Conversation,
+) -> None:
+    make_property("IMV-001")
+    model, _ = scripted_model(
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "search_properties",
+                    {
+                        "transaction_type": "aluguel",
+                        "neighborhood": "Boa Viagem",
+                        "max_price": 3000,
+                    },
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart("Encontrei o IMV-001 por R$ 2.500.")]),
+    )
+
+    result = run(model, "quero alugar em Boa Viagem", conversation)
+
+    assert "IMV-001" in result.output.message
+
+
 # --- escolha do modelo ------------------------------------------------------
 
 
 def test_em_debug_usa_o_modelo_local() -> None:
-    with patch("assistant.agent.settings.DEBUG", True):
+    """Regressão: sem base_url e api_key vindos do settings, a Ollama Cloud
+    devolve connection error ou 401."""
+    with patch("assistant.agent.settings.DEBUG", True), patch(
+        "assistant.agent.settings.OLLAMA_BASE_URL", "https://ollama.com/v1"
+    ), patch("assistant.agent.settings.OLLAMA_API_KEY", "chave-de-teste"), patch(
+        "assistant.agent.settings.OLLAMA_MODEL", "gpt-oss:20b"
+    ):
         model = build_model()
 
     assert isinstance(model, OllamaModel)
+    assert model.model_name == "gpt-oss:20b"
+    assert model.base_url == "https://ollama.com/v1/"
+    assert model._provider.client.api_key == "chave-de-teste"
+
+
+def test_ollama_sem_configuracao_falha_com_mensagem_clara() -> None:
+    with patch("assistant.agent.settings.DEBUG", True), patch(
+        "assistant.agent.settings.OLLAMA_BASE_URL", None
+    ), patch("assistant.agent.settings.OLLAMA_MODEL", None):
+        with pytest.raises(ImproperlyConfigured, match="OLLAMA_BASE_URL"):
+            build_model()
 
 
 def test_fora_de_debug_usa_a_openai_direto() -> None:

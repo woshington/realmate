@@ -1,4 +1,5 @@
-from pydantic_ai import Agent, RunContext
+from pydantic import ValidationError
+from pydantic_ai import Agent, RunContext, TextOutput, ToolOutput
 from pydantic_ai.models import Model
 from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -15,11 +16,21 @@ def build_model() -> Model:
     if settings.DEBUG:
         return OllamaModel(
             settings.OLLAMA_MODEL,
-            provider=OllamaProvider(base_url=settings.OLLAMA_BASE_URL),
+            provider=OllamaProvider(
+                base_url=settings.OLLAMA_BASE_URL,
+                api_key=settings.OLLAMA_API_KEY,
+            ),
         )
 
     provider = OpenAIProvider(api_key=settings.OPENAI_API_KEY)
     return OpenAIChatModel('gpt-5.2', provider=provider)
+
+
+def reply_from_text(text: str) -> AgentReply:
+    try:
+        return AgentReply.model_validate_json(text)
+    except ValidationError:
+        return AgentReply(message=text)
 
 
 def get_agent() -> Agent[AssistantDeps, AgentReply]:
@@ -27,7 +38,6 @@ def get_agent() -> Agent[AssistantDeps, AgentReply]:
         model=build_model(),
         deps_type=AssistantDeps,
         tools=[search_properties, faq_properties],
-        output_type=AgentReply,
-        system_prompt=SYSTEM_PROMPT,
-
+        output_type=[ToolOutput(AgentReply), TextOutput(reply_from_text)],
+        system_prompt=SYSTEM_PROMPT
     )

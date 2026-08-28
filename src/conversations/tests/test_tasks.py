@@ -1,12 +1,13 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from django.conf import settings
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from assistant import FALLBACK_MESSAGE
@@ -14,6 +15,8 @@ from assistant.schemas import AgentReply, PropertyOutput
 from assistant.tools import AssistantDeps
 from conversations.enums import MessageRole
 from conversations.models import Message, PropertyRecommendation
+from properties.enums import TransactionType
+from properties.models import Property
 from conversations.services import (
     get_recent_messages,
     has_newer_customer_message,
@@ -247,7 +250,24 @@ def test_agente_que_estoura_o_teto_responde_o_cliente(
 
     resposta = Message.objects.filter(role=MessageRole.ASSISTANT).get()
     assert resposta.content == FALLBACK_MESSAGE
-    assert "limite" in caplog.text
+    assert "não concluiu" in caplog.text
+
+
+def test_saida_invalida_do_modelo_tambem_responde_o_cliente(
+    fake_agent: Any,
+) -> None:
+    """Modelo que não produz saída válida não pode derrubar a task."""
+    fake_agent.run_sync.side_effect = UnexpectedModelBehavior(
+        "Exceeded maximum output retries (1)"
+    )
+    message = ingest("Oi", 0)
+
+    process_conversation(
+        conversation_id=message.conversation.pk, trigger_message_id=message.pk
+    )
+
+    resposta = Message.objects.filter(role=MessageRole.ASSISTANT).get()
+    assert resposta.content == FALLBACK_MESSAGE
 
 
 def test_teto_estourado_nao_registra_recomendacao(fake_agent: Any) -> None:
@@ -259,6 +279,32 @@ def test_teto_estourado_nao_registra_recomendacao(fake_agent: Any) -> None:
     )
 
     assert not PropertyRecommendation.objects.exists()
+
+
+def test_recomendacao_e_persistida_mesmo_com_resposta_em_texto(
+    fake_agent: Any,
+) -> None:
+    """Sem eco estruturado, a persistência vem do que a busca devolveu."""
+    imovel = Property.objects.create(
+        code="IMV-001",
+        transaction_type=TransactionType.RENT,
+        neighborhood="Boa Viagem",
+        price=Decimal("2500"),
+        bedrooms=2,
+    )
+
+    def responde_em_texto(*args: Any, **kwargs: Any) -> Any:
+        kwargs["deps"].presented_codes.append("IMV-001")
+        return MagicMock(output=AgentReply(message="Encontrei o IMV-001."))
+
+    fake_agent.run_sync.side_effect = responde_em_texto
+    message = ingest("Quero alugar em Boa Viagem", 0)
+
+    process_conversation(
+        conversation_id=message.conversation.pk, trigger_message_id=message.pk
+    )
+
+    assert PropertyRecommendation.objects.filter(property=imovel).exists()
 
 
 def test_resposta_da_ia_e_registrada_no_log(

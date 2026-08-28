@@ -2,7 +2,7 @@ import logging
 import uuid
 
 from celery import shared_task
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.usage import UsageLimits
 from django.conf import settings
 
@@ -58,20 +58,21 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
         before_message_id=trigger_message_id,
     )
 
+    deps = AssistantDeps(conversation_id=conversation_id)
     user_agent = agent.get_agent()
     try:
         result = user_agent.run_sync(
             trigger.content,
             message_history=to_model_messages(history),
-            deps=AssistantDeps(conversation_id=conversation_id),
+            deps=deps,
             usage_limits=UsageLimits(request_limit=settings.AGENT_REQUEST_LIMIT),
         )
-    except UsageLimitExceeded:
+    except (UsageLimitExceeded, UnexpectedModelBehavior) as error:
         logger.warning(
-            "Conversa %s: agente atingiu o limite de %s requisições sem "
-            "concluir; respondendo com a mensagem de fallback.",
+            "Conversa %s: agente não concluiu (%s); respondendo com a "
+            "mensagem de fallback.",
             conversation_id,
-            settings.AGENT_REQUEST_LIMIT,
+            error,
         )
         reply = AgentReply(message=FALLBACK_MESSAGE)
     else:
@@ -92,7 +93,13 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
         role=MessageRole.ASSISTANT,
     )
 
+    # Se o modelo respondeu em texto puro não há eco estruturado dos imóveis,
+    # mas a busca já sabe o que foi apresentado — a persistência é requisito.
+    recommended_codes = [
+        recommended.code for recommended in reply.recommended_properties
+    ] or deps.presented_codes
+
     add_recommendations(
         conversation_id=conversation_id,
-        property_codes=[recommended.code for recommended in reply.recommended_properties],
+        property_codes=recommended_codes,
     )

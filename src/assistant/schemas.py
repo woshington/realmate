@@ -11,12 +11,6 @@ class PropertyOutput(BaseModel):
 
 
 class PropertySearchResult(BaseModel):
-    """Resultado da busca junto com a orientação do que fazer em seguida.
-
-    Devolver só uma lista vazia faz o modelo tentar a sorte com outros
-    filtros; a orientação explícita corta o loop de novas buscas.
-    """
-
     properties: list[PropertyOutput] = Field(default_factory=list)
     guidance: str = Field()
 

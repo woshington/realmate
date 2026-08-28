@@ -289,6 +289,22 @@ def test_busca_por_codigo_tambem_exclui_ja_recomendados(
     assert call(conversation, code="JA-VISTO").properties == []
 
 
+def test_busca_registra_os_codigos_apresentados(conversation: Conversation) -> None:
+    """A task usa isso para persistir a recomendação quando a resposta vem em texto."""
+    make_property("IMV-001")
+    deps = AssistantDeps(conversation_id=conversation.pk)
+
+    call(
+        conversation,
+        deps=deps,
+        transaction_type=TransactionType.RENT,
+        neighborhood="Boa Viagem",
+        max_price=Decimal("3000"),
+    )
+
+    assert deps.presented_codes == ["IMV-001"]
+
+
 # --- corte do loop de buscas ------------------------------------------------
 
 
