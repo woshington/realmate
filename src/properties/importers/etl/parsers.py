@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -13,7 +11,6 @@ _TRANSACTION_MAP = {
 
 
 def parse_transaction_type(value: str) -> str:
-    """Mapeia o rótulo da origem para o valor gravado em `Property`."""
     transaction_type = _TRANSACTION_MAP.get(str(value).strip().lower())
     if transaction_type is None:
         raise ValueError(f"tipo_negocio desconhecido: {value!r}")
@@ -21,7 +18,6 @@ def parse_transaction_type(value: str) -> str:
 
 
 def parse_price(value: Any) -> Decimal:
-    """Aceita número (JSON) ou string (CSV) — `Decimal(str(...))` evita float."""
     try:
         return Decimal(str(value).strip())
     except (InvalidOperation, AttributeError) as exc:

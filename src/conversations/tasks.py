@@ -86,15 +86,13 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
     )
 
     register_customer_message(
-        external_id=str(uuid.uuid4()),
+        external_id=uuid.uuid4(),
         user_phone=trigger.conversation.user_phone,
         content=reply.message,
         timestamp=trigger.timestamp,
         role=MessageRole.ASSISTANT,
     )
 
-    # Se o modelo respondeu em texto puro não há eco estruturado dos imóveis,
-    # mas a busca já sabe o que foi apresentado — a persistência é requisito.
     recommended_codes = [
         recommended.code for recommended in reply.recommended_properties
     ] or deps.presented_codes
