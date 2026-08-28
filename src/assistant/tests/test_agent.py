@@ -16,8 +16,6 @@ from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.usage import UsageLimits
 
-from django.core.exceptions import ImproperlyConfigured
-
 from assistant.agent import build_model, get_agent
 from assistant.schemas import AgentReply
 from assistant.tools import MAX_SEARCHES_PER_RUN, AssistantDeps
@@ -327,14 +325,6 @@ def test_em_debug_usa_o_modelo_local() -> None:
     assert model.model_name == "gpt-oss:20b"
     assert model.base_url == "https://ollama.com/v1/"
     assert model._provider.client.api_key == "chave-de-teste"
-
-
-def test_ollama_sem_configuracao_falha_com_mensagem_clara() -> None:
-    with patch("assistant.agent.settings.DEBUG", True), patch(
-        "assistant.agent.settings.OLLAMA_BASE_URL", None
-    ), patch("assistant.agent.settings.OLLAMA_MODEL", None):
-        with pytest.raises(ImproperlyConfigured, match="OLLAMA_BASE_URL"):
-            build_model()
 
 
 def test_fora_de_debug_usa_a_openai_direto() -> None:

@@ -4,6 +4,7 @@ from celery import shared_task
 
 from config import settings
 from properties.importers.etl.csv import CSVPropertyImporter
+from properties.importers.etl.json import JSONPropertyImporter
 from properties.importers.schemas import ImportResult
 
 logger = logging.getLogger(__name__)
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 def load_properties() -> dict[str, int]:
     importers = [
         CSVPropertyImporter(settings.PROPERTIES_CSV_PATH),
-        # JSONPropertyImporter("data/imoveis_resumo.json"),
+        JSONPropertyImporter(settings.PROPERTIES_JSON_PATH),
     ]
 
     total = ImportResult()

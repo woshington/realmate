@@ -42,18 +42,17 @@ class PropertyImporter(ABC):
 
     @staticmethod
     def _upsert(data: PropertyData, imported_at: datetime) -> tuple[Property, bool]:
-        with transaction.atomic():
-            return Property.objects.update_or_create(
-                code=data.code,
-                defaults={
-                    "transaction_type": data.transaction_type,
-                    "neighborhood": data.neighborhood,
-                    "price": data.price,
-                    "bedrooms": data.bedrooms,
-                    "address": data.address,
-                    "description": data.description,
-                    "source": data.source,
-                    "source_reference": data.source_reference,
-                    "imported_at": imported_at,
-                },
-            )
+        return Property.objects.update_or_create(
+            code=data.code,
+            defaults={
+                "transaction_type": data.transaction_type,
+                "neighborhood": data.neighborhood,
+                "price": data.price,
+                "bedrooms": data.bedrooms,
+                "address": data.address,
+                "description": data.description,
+                "source": data.source,
+                "source_reference": data.source_reference,
+                "imported_at": imported_at,
+            },
+        )

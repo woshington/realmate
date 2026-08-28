@@ -86,8 +86,10 @@ CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
     "carregar-imoveis-diariamente": {
-        "task": "properties.tasks.load_properties",
-        "schedule": crontab(hour=0, minute=0),
+        # Precisa bater com o `name` do @shared_task, não com o caminho do
+        # módulo: o worker registra a task pelo nome declarado.
+        "task": "properties.load_properties",
+        "schedule": crontab(minute="*"),
     },
 }
 
