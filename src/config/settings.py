@@ -89,8 +89,18 @@ CELERY_BEAT_SCHEDULE = {
         # Precisa bater com o `name` do @shared_task, não com o caminho do
         # módulo: o worker registra a task pelo nome declarado.
         "task": "properties.load_properties",
-        "schedule": crontab(minute="*"),
+        "schedule": crontab(minute="0", hour=0),
     },
+}
+
+CACHE_URL = os.environ.get("CACHE_URL", "redis://localhost:6379/1")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": CACHE_URL,
+        "KEY_PREFIX": "realmate",
+    }
 }
 
 REST_FRAMEWORK = {
@@ -104,7 +114,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gpt-oss:20b")
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY")
 
 AGENT_REQUEST_LIMIT = 10

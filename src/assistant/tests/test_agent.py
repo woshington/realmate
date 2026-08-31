@@ -157,6 +157,48 @@ def test_as_duas_tools_sao_expostas_ao_modelo(conversation: Conversation) -> Non
     assert set(exposed) == {"search_properties", "faq_properties"}
 
 
+def test_tools_chegam_ao_modelo_com_descricao(conversation: Conversation) -> None:
+    """Sem docstring, o modelo recebe só os nomes dos argumentos.
+
+    A descrição da tool e a de cada parâmetro saem do docstring da função. É o
+    que informa ao modelo quando chamar cada uma e, sobretudo, que os filtros
+    obrigatórios existem — a validação determinística continua sendo a garantia,
+    mas a descrição evita a ida-e-volta do `ModelRetry` no caso comum.
+    """
+
+    descriptions: dict[str, str | None] = {}
+    parameters: dict[str, dict[str, object]] = {}
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        for tool in info.function_tools:
+            descriptions[tool.name] = tool.description
+            parameters[tool.name] = tool.parameters_json_schema.get("properties", {})
+        return ModelResponse(parts=[reply("Olá!")])
+
+    run(FunctionModel(respond), "oi", conversation)
+
+    busca = descriptions["search_properties"]
+    assert busca is not None and busca.strip()
+    assert "obrigatório" in busca.lower()
+
+    faq = descriptions["faq_properties"]
+    assert faq is not None and faq.strip()
+
+    # Cada filtro da busca precisa se explicar sozinho no schema.
+    filtros = parameters["search_properties"]
+    assert set(filtros) == {
+        "code",
+        "transaction_type",
+        "neighborhood",
+        "min_price",
+        "max_price",
+        "bedrooms",
+    }
+    for nome, schema in filtros.items():
+        assert isinstance(schema, dict)
+        assert schema.get("description"), f"filtro {nome} sem descrição"
+
+
 # --- proteção contra loop ---------------------------------------------------
 
 

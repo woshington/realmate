@@ -47,6 +47,44 @@ def search_properties(
     max_price: Optional[Decimal] = None,
     bedrooms: Optional[int] = None,
 ) -> PropertySearchResult:
+    """Busca imóveis residenciais da imobiliária em Recife/PE.
+
+    Use esta ferramenta sempre que o cliente pedir opções de imóveis, seja por
+    código, seja por características.
+
+    Há duas formas de buscar, e elas são excludentes:
+
+    1. **Por código**: informe apenas `code`. Os demais filtros são ignorados.
+    2. **Por características**: `transaction_type`, `neighborhood` e pelo menos
+       um entre `min_price` e `max_price` são OBRIGATÓRIOS. Se algum deles
+       faltar, a busca é recusada e nenhum imóvel é devolvido — pergunte o dado
+       que falta ao cliente antes de tentar de novo. Nunca preencha um filtro
+       obrigatório com um valor que o cliente não informou explicitamente.
+
+    A busca devolve no máximo 2 imóveis e exclui automaticamente tudo que já foi
+    recomendado nesta conversa — não é preciso pedir para excluir, e um imóvel
+    já apresentado nunca reaparece. O campo `guidance` da resposta diz o que
+    fazer com o resultado; siga essa orientação.
+
+    Args:
+        code: Código do imóvel (ex.: "IMV-001", "C011"), quando o cliente cita
+            um imóvel específico. Dispensa todos os outros filtros.
+        transaction_type: "aluguel" ou "venda". Obrigatório se `code` não for
+            informado.
+        neighborhood: Bairro em Recife (ex.: "Boa Viagem"). Obrigatório se
+            `code` não for informado.
+        min_price: Preço mínimo, em reais. Use quando o cliente der um piso
+            ("a partir de 2000").
+        max_price: Preço máximo, em reais. Use quando o cliente der um teto
+            ("até 3000"). Ao menos um entre `min_price` e `max_price` é
+            obrigatório se `code` não for informado.
+        bedrooms: Número exato de quartos. Sempre opcional.
+
+    Returns:
+        Os imóveis encontrados e uma orientação (`guidance`) sobre o que fazer
+        em seguida.
+    """
+
     if ctx.deps.searches_done >= MAX_SEARCHES_PER_RUN:
         return PropertySearchResult(guidance=SEARCH_BUDGET_SPENT)
 
@@ -93,6 +131,21 @@ def search_properties(
 
 
 def faq_properties() -> list[FaqEntry]:
+    """Consulta a base de perguntas frequentes sobre a imobiliária.
+
+    Use esta ferramenta para qualquer dúvida sobre a Realmate em si — documentos
+    necessários, taxas, prazos, horários de atendimento, formas de pagamento,
+    procedimentos de visita e de contrato.
+
+    Devolve a base inteira de perguntas e respostas. Responda ao cliente usando
+    APENAS o que estiver nessas entradas. Se a informação que ele pediu não
+    estiver aqui, diga que você não tem essa informação e sugira contato direto
+    com a imobiliária — nunca deduza nem invente uma regra da empresa.
+
+    Returns:
+        Todas as entradas da base, cada uma com `pergunta` e `resposta`.
+    """
+
     return list(_load_faq())
 
 

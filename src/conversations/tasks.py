@@ -16,6 +16,7 @@ from conversations.services import (
     get_recent_messages,
     has_newer_customer_message, register_customer_message, add_recommendations,
 )
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -34,70 +35,83 @@ def schedule_conversation_processing(
 
 @shared_task(name="conversations.process_conversation")
 def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
-    if has_newer_customer_message(
-        conversation_id=conversation_id, message_id=trigger_message_id
-    ):
+    lock_id = f"lock:{conversation_id}-{trigger_message_id}"
+
+    acquire_lock = lambda: cache.add(lock_id, "true", 15)
+    if not acquire_lock():
+        logger.warning(f"Task process_conversation para o recurso {lock_id} já está em execução. Pulando.")
+        return
+
+    try:
+        if has_newer_customer_message(
+            conversation_id=conversation_id,
+            message_id=trigger_message_id
+        ):
+            logger.info(
+                "Processamento da conversa %s disparado pela mensagem %s foi "
+                "superado por uma mensagem mais recente.",
+                conversation_id,
+                trigger_message_id,
+            )
+            return
+
         logger.info(
-            "Processamento da conversa %s disparado pela mensagem %s foi "
-            "superado por uma mensagem mais recente.",
+            "Conversa %s pronta para processamento (mensagem %s).",
             conversation_id,
             trigger_message_id,
         )
-        return
 
-    logger.info(
-        "Conversa %s pronta para processamento (mensagem %s).",
-        conversation_id,
-        trigger_message_id,
-    )
 
-    trigger = Message.objects.get(pk=trigger_message_id)
-    history = get_recent_messages(
-        conversation_id=conversation_id,
-        limit=settings.AGENT_HISTORY_MESSAGE_LIMIT,
-        before_message_id=trigger_message_id,
-    )
 
-    deps = AssistantDeps(conversation_id=conversation_id)
-    user_agent = agent.get_agent()
-    try:
-        result = user_agent.run_sync(
-            trigger.content,
-            message_history=to_model_messages(history),
-            deps=deps,
-            usage_limits=UsageLimits(request_limit=settings.AGENT_REQUEST_LIMIT),
+        trigger = Message.objects.get(pk=trigger_message_id)
+        history = get_recent_messages(
+            conversation_id=conversation_id,
+            limit=settings.AGENT_HISTORY_MESSAGE_LIMIT,
+            before_message_id=trigger_message_id,
         )
-    except (UsageLimitExceeded, UnexpectedModelBehavior) as error:
-        logger.warning(
-            "Conversa %s: agente não concluiu (%s); respondendo com a "
-            "mensagem de fallback.",
+
+        deps = AssistantDeps(conversation_id=conversation_id)
+        user_agent = agent.get_agent()
+        try:
+            result = user_agent.run_sync(
+                trigger.content,
+                message_history=to_model_messages(history),
+                deps=deps,
+                usage_limits=UsageLimits(request_limit=settings.AGENT_REQUEST_LIMIT),
+            )
+        except (UsageLimitExceeded, UnexpectedModelBehavior) as error:
+            logger.warning(
+                "Conversa %s: agente não concluiu (%s); respondendo com a "
+                "mensagem de fallback.",
+                conversation_id,
+                error,
+            )
+            reply = AgentReply(message=FALLBACK_MESSAGE)
+        else:
+            reply = result.output
+
+        logger.info(
+            "Conversa %s: resposta da IA obtida com %s imóvel(is) recomendado(s): %s",
             conversation_id,
-            error,
+            len(reply.recommended_properties),
+            [recommended.code for recommended in reply.recommended_properties],
         )
-        reply = AgentReply(message=FALLBACK_MESSAGE)
-    else:
-        reply = result.output
 
-    logger.info(
-        "Conversa %s: resposta da IA obtida com %s imóvel(is) recomendado(s): %s",
-        conversation_id,
-        len(reply.recommended_properties),
-        [recommended.code for recommended in reply.recommended_properties],
-    )
+        register_customer_message(
+            external_id=uuid.uuid4(),
+            user_phone=trigger.conversation.user_phone,
+            content=reply.message,
+            timestamp=trigger.timestamp,
+            role=MessageRole.ASSISTANT,
+        )
 
-    register_customer_message(
-        external_id=uuid.uuid4(),
-        user_phone=trigger.conversation.user_phone,
-        content=reply.message,
-        timestamp=trigger.timestamp,
-        role=MessageRole.ASSISTANT,
-    )
+        recommended_codes = [
+            recommended.code for recommended in reply.recommended_properties
+        ] or deps.presented_codes
 
-    recommended_codes = [
-        recommended.code for recommended in reply.recommended_properties
-    ] or deps.presented_codes
-
-    add_recommendations(
-        conversation_id=conversation_id,
-        property_codes=recommended_codes,
-    )
+        add_recommendations(
+            conversation_id=conversation_id,
+            property_codes=recommended_codes,
+        )
+    finally:
+        cache.delete(lock_id)

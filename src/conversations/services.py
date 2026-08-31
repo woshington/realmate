@@ -4,7 +4,6 @@ from datetime import datetime
 from uuid import UUID
 
 from django.db import transaction
-from google.protobuf import timestamp
 
 from conversations.enums import MessageRole
 from conversations.models import Conversation, Message

@@ -2,51 +2,26 @@ import logging
 
 from celery import shared_task
 
-from config import settings
-from properties.importers.etl.csv import CSVPropertyImporter
-from properties.importers.etl.json import JSONPropertyImporter
-from properties.importers.schemas import ImportResult
+from properties.services import import_all_properties
 
 logger = logging.getLogger(__name__)
 
 
 @shared_task(name="properties.load_properties")
 def load_properties() -> dict[str, int]:
-    importers = [
-        CSVPropertyImporter(settings.PROPERTIES_CSV_PATH),
-        JSONPropertyImporter(settings.PROPERTIES_JSON_PATH),
-    ]
+    """Carga diária dos imóveis.
 
-    total = ImportResult()
+    A task é só o agendamento: a orquestração vive em
+    ``properties.services.import_all_properties``, compartilhada com o
+    management command. O retorno é um dict simples porque precisa ser
+    serializável em JSON para o result backend do Celery.
+    """
 
-    for importer in importers:
-        result = importer.load()
-        logger.info(
-            "%s: %d criados, %d atualizados, %d ignorados.",
-            type(importer).__name__,
-            result.created,
-            result.updated,
-            result.skipped,
-        )
-        for error in result.errors:
-            logger.warning("%s: %s", type(importer).__name__, error)
-
-        total.created += result.created
-        total.updated += result.updated
-        total.skipped += result.skipped
-        total.errors.extend(result.errors)
-
-    logger.info(
-        "Carga de imóveis concluída: %d criados, %d atualizados, %d ignorados, %d erros.",
-        total.created,
-        total.updated,
-        total.skipped,
-        len(total.errors),
-    )
+    result = import_all_properties()
 
     return {
-        "created": total.created,
-        "updated": total.updated,
-        "skipped": total.skipped,
-        "errors": len(total.errors),
+        "created": result.created,
+        "updated": result.updated,
+        "skipped": result.skipped,
+        "errors": len(result.errors),
     }
