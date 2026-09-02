@@ -330,7 +330,7 @@ menos confiável do sistema (a saída de um LLM) entra no domínio. Achei a troc
 favorável — mas é a decisão deste documento com maior chance de ser revertida se
 a avaliação priorizar a literalidade do enunciado. Migrar para o SDK puro é
 contido: `assistant/agent.py` e a assinatura das tools; `tools.py`, `schemas.py`,
-`history.py` e todo o resto do sistema ficam intactos.
+`helpers.py` e todo o resto do sistema ficam intactos.
 
 ### O agente é construído por request, não é global
 

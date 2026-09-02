@@ -12,6 +12,7 @@ dependencies = [
     "redis>=5.0",
     "pydantic-ai>=2.8.0",
     "djangorestframework>=3.18.0",
+    "openai-agents>=0.22.0",
 ]
 
 [dependency-groups]

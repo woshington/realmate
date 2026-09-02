@@ -1,28 +1,32 @@
 import logging
 import uuid
 
+from agents import Runner
 from celery import shared_task
-from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.usage import UsageLimits
 from django.conf import settings
+from django.core.cache import cache
+from openai.types.responses import EasyInputMessageParam
 
 from assistant import FALLBACK_MESSAGE, agent
 from assistant.schemas import AgentReply
 from assistant.tools import AssistantDeps
-from assistant.history import to_model_messages
+from assistant.helpers import to_model_messages
 from conversations.enums import MessageRole
 from conversations.models import Message
 from conversations.services import (
+    add_recommendations,
     get_recent_messages,
-    has_newer_customer_message, register_message, add_recommendations,
+    has_newer_customer_message,
+    register_message,
 )
-from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
 
 def schedule_conversation_processing(
-    *, conversation_id: int, trigger_message_id: int
+    *,
+    conversation_id: int,
+    trigger_message_id: int,
 ) -> None:
     process_conversation.apply_async(
         kwargs={
@@ -34,22 +38,28 @@ def schedule_conversation_processing(
 
 
 @shared_task(name="conversations.process_conversation")
-def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
+def process_conversation(
+    conversation_id: int,
+    trigger_message_id: int,
+) -> None:
     lock_id = f"lock:{conversation_id}-{trigger_message_id}"
 
-    acquire_lock = lambda: cache.add(lock_id, "true", 15)
-    if not acquire_lock():
-        logger.warning(f"Task process_conversation para o recurso {lock_id} já está em execução. Pulando.")
+    if not cache.add(lock_id, "true", 15):
+        logger.warning(
+            "Task process_conversation para o recurso %s "
+            "já está em execução. Pulando.",
+            lock_id,
+        )
         return
 
     try:
         if has_newer_customer_message(
             conversation_id=conversation_id,
-            message_id=trigger_message_id
+            message_id=trigger_message_id,
         ):
             logger.info(
-                "Processamento da conversa %s disparado pela mensagem %s foi "
-                "superado por uma mensagem mais recente.",
+                "Processamento da conversa %s disparado pela mensagem %s "
+                "foi superado por uma mensagem mais recente.",
                 conversation_id,
                 trigger_message_id,
             )
@@ -61,40 +71,54 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
             trigger_message_id,
         )
 
-
-
         trigger = Message.objects.get(pk=trigger_message_id)
+
         history = get_recent_messages(
             conversation_id=conversation_id,
             limit=settings.AGENT_HISTORY_MESSAGE_LIMIT,
             before_message_id=trigger_message_id,
         )
 
-        deps = AssistantDeps(conversation_id=conversation_id)
+        deps = AssistantDeps(
+            conversation_id=conversation_id,
+        )
+
         user_agent = agent.get_agent()
+
         try:
-            result = user_agent.run_sync(
-                trigger.content,
-                message_history=to_model_messages(history),
-                deps=deps,
-                usage_limits=UsageLimits(request_limit=settings.AGENT_REQUEST_LIMIT),
+            result = Runner.run_sync(
+                starting_agent=user_agent,
+                input=[
+                    *to_model_messages(history),
+                    EasyInputMessageParam(
+                        role="user",
+                        content=trigger.content,
+                    ),
+                ],
+                context=deps,
             )
-        except (UsageLimitExceeded, UnexpectedModelBehavior) as error:
-            logger.warning(
-                "Conversa %s: agente não concluiu (%s); respondendo com a "
-                "mensagem de fallback.",
+        except Exception:
+            logger.exception(
+                "Erro ao processar conversa %s; "
+                "respondendo com mensagem de fallback.",
                 conversation_id,
-                error,
             )
-            reply = AgentReply(message=FALLBACK_MESSAGE)
+            reply = AgentReply(
+                message=FALLBACK_MESSAGE,
+            )
+
         else:
-            reply = result.output
+            reply = result.final_output
 
         logger.info(
-            "Conversa %s: resposta da IA obtida com %s imóvel(is) recomendado(s): %s",
+            "Conversa %s: resposta da IA obtida com %s imóvel(is) "
+            "recomendado(s): %s",
             conversation_id,
             len(reply.recommended_properties),
-            [recommended.code for recommended in reply.recommended_properties],
+            [
+                recommended.code
+                for recommended in reply.recommended_properties
+            ],
         )
 
         register_message(
@@ -106,12 +130,14 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
         )
 
         recommended_codes = [
-            recommended.code for recommended in reply.recommended_properties
+            recommended.code
+            for recommended in reply.recommended_properties
         ] or deps.presented_codes
 
         add_recommendations(
             conversation_id=conversation_id,
             property_codes=recommended_codes,
         )
+
     finally:
         cache.delete(lock_id)
