@@ -18,7 +18,7 @@ class MessageIngestion:
 
 
 @transaction.atomic
-def register_customer_message(
+def register_message(
     *,
     external_id: UUID,
     user_phone: str,

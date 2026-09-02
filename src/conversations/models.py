@@ -110,3 +110,5 @@ class PropertyRecommendation(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.conversation.user_phone} → {self.property.code}"
+
+

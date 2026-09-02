@@ -1,3 +1,4 @@
+from django.conf import settings
 from pydantic import ValidationError
 from pydantic_ai import Agent, TextOutput, ToolOutput
 from pydantic_ai.models import Model
@@ -5,7 +6,6 @@ from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.ollama import OllamaProvider
-from django.conf import settings
 
 from assistant import SYSTEM_PROMPT
 from assistant.schemas import AgentReply
@@ -13,7 +13,7 @@ from assistant.tools import AssistantDeps, search_properties, faq_properties
 
 
 def build_model() -> Model:
-    if settings.DEBUG:
+    if settings.USE_OLLAMA:
         return OllamaModel(
             settings.OLLAMA_MODEL,
             provider=OllamaProvider(

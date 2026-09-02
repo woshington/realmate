@@ -16,8 +16,8 @@ class PropertySearchResult(BaseModel):
 
 
 class FaqEntry(BaseModel):
-    pergunta: str = Field()
-    resposta: str = Field()
+    ask: str = Field(alias="pergunta")
+    answer: str = Field(alias="resposta")
 
 
 class AgentReply(BaseModel):

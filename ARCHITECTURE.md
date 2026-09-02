@@ -245,7 +245,7 @@ um evento que nunca vamos tratar.
 
 ### Idempotência
 
-Delegada à constraint de `Message.external_id`. `register_customer_message`
+Delegada à constraint de `Message.external_id`. `register_message`
 devolve um `MessageIngestion(message, conversation, created)`; quando
 `created=False`, a view responde `"ignored"` e **não enfileira nada**. Sem essa
 guarda, uma reentrega dispararia um segundo processamento de IA para uma
@@ -540,7 +540,7 @@ negócio.
 Decisões que existem por causa da tipagem:
 
 - **`MessageIngestion` como dataclass frozen** em vez de tupla. O retorno de
-  `register_customer_message` é `(message, conversation, created)` — como tupla,
+  `register_message` é `(message, conversation, created)` — como tupla,
   cada chamador precisaria lembrar da ordem.
 - **Modelos Pydantic nas fronteiras.** `PropertyData` (ETL), `AgentReply` e
   `PropertySearchResult` (IA), `AssistantDeps` (contexto de tool). Todo ponto
@@ -607,7 +607,7 @@ Itens que identifiquei e conscientemente não resolvi, com o encaminhamento:
    minute=0)` (00:00 UTC). Correção de uma linha em `config/settings.py`.
 2. **Import não utilizado** `from google.protobuf import timestamp` em
    `conversations/services.py` — resíduo de autocomplete, sem efeito, a remover.
-3. **`register_customer_message` também grava a mensagem do assistente**, com o
+3. **`register_message` também grava a mensagem do assistente**, com o
    papel passado por parâmetro. Funciona, mas o nome mente. Extrair
    `register_assistant_message` deixaria as duas intenções explícitas.
 4. **A resposta do assistente reusa o `timestamp` da mensagem do cliente.**

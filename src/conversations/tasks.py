@@ -14,7 +14,7 @@ from conversations.enums import MessageRole
 from conversations.models import Message
 from conversations.services import (
     get_recent_messages,
-    has_newer_customer_message, register_customer_message, add_recommendations,
+    has_newer_customer_message, register_message, add_recommendations,
 )
 from django.core.cache import cache
 
@@ -97,7 +97,7 @@ def process_conversation(conversation_id: int, trigger_message_id: int) -> None:
             [recommended.code for recommended in reply.recommended_properties],
         )
 
-        register_customer_message(
+        register_message(
             external_id=uuid.uuid4(),
             user_phone=trigger.conversation.user_phone,
             content=reply.message,

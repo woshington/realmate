@@ -149,3 +149,6 @@ DATA_DIR = BASE_DIR / "data"
 PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"
 PROPERTIES_JSON_PATH = DATA_DIR / "imoveis_resumo.json"
 FAQ_JSON_PATH = DATA_DIR / "perguntas_frequentes.json"
+
+
+USE_OLLAMA=True

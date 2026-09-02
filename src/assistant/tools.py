@@ -131,19 +131,22 @@ def search_properties(
 
 
 def faq_properties() -> list[FaqEntry]:
-    """Consulta a base de perguntas frequentes sobre a imobiliária.
+    """Consulta a base de perguntas frequentes sobre a imobiliária Realmate.
 
-    Use esta ferramenta para qualquer dúvida sobre a Realmate em si — documentos
-    necessários, taxas, prazos, horários de atendimento, formas de pagamento,
-    procedimentos de visita e de contrato.
+    Use esta ferramenta para dúvidas sobre a Realmate, como documentos necessários,
+    taxas, prazos, horários de atendimento, formas de pagamento, visitas e contratos.
 
-    Devolve a base inteira de perguntas e respostas. Responda ao cliente usando
-    APENAS o que estiver nessas entradas. Se a informação que ele pediu não
-    estiver aqui, diga que você não tem essa informação e sugira contato direto
-    com a imobiliária — nunca deduza nem invente uma regra da empresa.
+    A ferramenta retorna todas as perguntas e respostas disponíveis na base.
+
+    Responda ao cliente usando APENAS as informações presentes nas entradas retornadas.
+    Nunca deduza, invente ou complemente informações que não estejam na base.
+
+    Caso a base não contenha informações suficientes para responder à dúvida do cliente,
+    informe que não encontrou a resposta para a dúvida e sugira que ele entre em contato
+    diretamente com a imobiliária.
 
     Returns:
-        Todas as entradas da base, cada uma com `pergunta` e `resposta`.
+        Todas as entradas da base, cada uma contendo `pergunta` e `resposta`.
     """
 
     return list(_load_faq())

@@ -13,7 +13,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from conversations.services import register_customer_message
+from conversations.services import register_message
 from conversations.tasks import schedule_conversation_processing
 from webhooks.enums import WebhookEvent
 from webhooks.serializers import MessageReceivedSerializer, WebhookEnvelopeSerializer
@@ -34,7 +34,7 @@ class MessageWebhookView(APIView):
         content.is_valid(raise_exception=True)
         validated = content.validated_data
         message_id = validated["message_id"]
-        ingestion = register_customer_message(
+        ingestion = register_message(
             external_id=message_id,
             user_phone=validated["user_phone_number"],
             content=validated["message_content"],

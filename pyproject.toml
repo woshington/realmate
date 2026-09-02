@@ -30,7 +30,7 @@ typecheck = [
 
 [tool.mypy]
 explicit_package_bases = true
-packages = "src"
+packages = ["assistant", "common", "config", "conversations", "properties", "webhooks"]
 namespace_packages = true
 mypy_path = ["src"]
 allow_redefinition = true
