@@ -87,11 +87,11 @@ CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
     "carregar-imoveis-diariamente": {
         "task": "properties.load_properties",
-        "schedule": crontab(minute="0", hour=0),
+        "schedule": crontab(minute="0", hour="0"),
     },
     "encerrar-conversas-inativas": {
         "task": "conversations.expire_inactive_conversations",
-        "schedule": crontab(minute="*"),
+        "schedule": crontab(minute="/15"),
     },
 }
 
@@ -141,10 +141,7 @@ LOGGING = {
 
 DEBOUNCE_WINDOW_SECONDS = 10
 
-# Tempo sem mensagem depois do qual o beat encerra o atendimento. Precisa ser
-# muito maior que a janela de debounce: enquanto ela corre, a conversa ainda
-# está prestes a ser respondida.
-INACTIVITY_TIMEOUT_HOURS = 24
+INACTIVITY_TIMEOUT_HOURS = 1
 
 DATA_DIR = BASE_DIR / "data"
 PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"
