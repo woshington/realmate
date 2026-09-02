@@ -12,9 +12,11 @@ from assistant.tools.search_properties_tools import search_properties
 from assistant.tools.faq_tools import faq_properties
 
 
+def get_client():
+    return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
 def build_model():
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    provider = OpenAIProvider(openai_client=client)
+    provider = OpenAIProvider(openai_client=get_client())
 
     return provider.get_model("gpt-5.2")
 
@@ -30,3 +32,8 @@ def get_agent() -> Agent[AssistantDeps]:
         output_type=AgentReply,
         instructions=SYSTEM_PROMPT,
     )
+
+async def create_conversation() -> str | None:
+    client = get_client()
+    response = await client.conversations.create()
+    return getattr(response, "id")

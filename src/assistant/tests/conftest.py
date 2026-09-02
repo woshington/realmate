@@ -1,16 +1,16 @@
-"""Ferramental dos testes do assistente.
+"""Test tooling for the assistant.
 
-O agente é testado sem rede e sem banco:
+The agent is tested without network and without a database:
 
-* o modelo é o ``ScriptedModel`` do próprio SDK, que devolve passos
-  determinísticos (uma chamada de tool, uma mensagem final) e ainda registra o
-  que o agente mandou para o modelo;
-* o ORM que a tool de busca usa é substituído pela fachada ``PropertyORM``, que
-  concentra os dois mocks (``Property`` e ``PropertyRecommendation``) numa API
-  legível — ``orm.returns(...)``, ``orm.already_recommended(...)``.
+* the model is the SDK's own ``ScriptedModel``, which returns deterministic
+  steps (a tool call, a final message) and also records what the agent sent to
+  the model;
+* the ORM used by the search tool is replaced by the ``PropertyORM`` facade,
+  which gathers both mocks (``Property`` and ``PropertyRecommendation``) behind
+  a readable API — ``orm.returns(...)``, ``orm.already_recommended(...)``.
 
-Assim os testes falam de comportamento ("qual tool foi chamada", "quantos
-imóveis voltaram") e não de encanamento.
+That way the tests talk about behavior ("which tool was called", "how many
+properties came back") instead of plumbing.
 """
 
 import asyncio
@@ -39,10 +39,10 @@ from assistant.tools.faq_tools import _load_faq
 SEARCH_MODULE = "assistant.tools.search_properties_tools"
 
 
-# ---- Fachada sobre o ORM mockado ------------------------------------------
+# ---- Facade over the mocked ORM --------------------------------------------
 
 class PropertyORM:
-    """Os dois modelos que a tool de busca consulta, num objeto só."""
+    """The two models the search tool queries, behind a single object."""
 
     def __init__(self, property_model: MagicMock, recommendation_model: MagicMock):
         self.property = property_model
@@ -51,11 +51,11 @@ class PropertyORM:
         self.already_recommended()
 
     def returns(self, *properties: Any) -> None:
-        """Define o que a query de imóveis devolve."""
+        """Define what the property query returns."""
         self.property.objects.filter.return_value.exclude.return_value = list(properties)
 
     def already_recommended(self, *property_ids: int) -> None:
-        """Define os imóveis já recomendados na conversa."""
+        """Define the properties already recommended in the conversation."""
         self.recommendation.objects.filter.return_value.values_list.return_value = list(
             property_ids
         )
@@ -66,12 +66,12 @@ class PropertyORM:
 
     @property
     def filters(self) -> dict[str, Any]:
-        """Filtros da última query de imóveis."""
+        """Filters of the last property query."""
         return dict(self.property.objects.filter.call_args.kwargs)
 
     @property
     def excluded_ids(self) -> list[int]:
-        """Ids passados para o ``.exclude()`` da última query."""
+        """Ids passed to the ``.exclude()`` of the last query."""
         exclude = self.property.objects.filter.return_value.exclude
         return list(exclude.call_args.kwargs["id__in"])
 
@@ -85,7 +85,7 @@ def orm() -> Iterator[PropertyORM]:
 
 @pytest.fixture
 def property_stub() -> Callable[..., SimpleNamespace]:
-    """Imóvel duck-typed: a tool só lê atributos, nunca toca no banco."""
+    """Duck-typed property: the tool only reads attributes, never hits the database."""
 
     def _make(
         code: str = "IMV-001",
@@ -107,14 +107,15 @@ def property_stub() -> Callable[..., SimpleNamespace]:
     return _make
 
 
-# ---- Invocação direta de uma tool ------------------------------------------
+# ---- Direct invocation of a tool -------------------------------------------
 
 @pytest.fixture
 def call_tool() -> Callable[..., Any]:
-    """Executa uma tool do jeito que o runner executa, mas sem subir o agente.
+    """Run a tool the way the runner runs it, but without starting the agent.
 
-    ``@function_tool`` transforma a função num ``FunctionTool``; o corpo original
-    só é alcançável por ``on_invoke_tool``, que recebe os argumentos em JSON.
+    ``@function_tool`` turns the function into a ``FunctionTool``; the original
+    body is only reachable through ``on_invoke_tool``, which takes its arguments
+    as JSON.
     """
 
     def _call(
@@ -127,7 +128,7 @@ def call_tool() -> Callable[..., Any]:
         context: ToolContext[Any] = ToolContext(
             context=deps if deps is not None else AssistantDeps(conversation_id=1),
             tool_name=tool.name,
-            tool_call_id="call-teste",
+            tool_call_id="call-test",
             tool_arguments=raw_arguments,
         )
         invocation = tool.on_invoke_tool(context, raw_arguments)
@@ -136,11 +137,11 @@ def call_tool() -> Callable[..., Any]:
     return _call
 
 
-# ---- Execução do agente com modelo roteirizado ------------------------------
+# ---- Running the agent with a scripted model --------------------------------
 
 @dataclass(frozen=True)
 class AgentRun:
-    """Resultado de um run, com as perguntas que os testes fazem."""
+    """Result of a run, exposing the questions the tests ask."""
 
     result: Any
     model: ScriptedModel
@@ -153,9 +154,9 @@ class AgentRun:
 
     @property
     def first_call(self) -> Any:
-        """Primeira chamada ao modelo — o que o agente expôs antes de qualquer tool."""
+        """First call to the model — what the agent exposed before any tool."""
         call = self.model.first_call
-        assert call is not None, "o agente não chegou a chamar o modelo"
+        assert call is not None, "the agent never called the model"
         return call
 
     @property
@@ -178,10 +179,10 @@ class AgentRun:
 
 @pytest.fixture
 def run_agent(orm: PropertyORM) -> Callable[..., AgentRun]:
-    """Roda o agente real (tools, prompt e output_type de verdade) num modelo falso.
+    """Run the real agent (real tools, prompt and output_type) on a fake model.
 
-    Só ``build_model`` é trocado: tudo abaixo dele — schema das tools, execução,
-    parse da resposta final — é o código de produção.
+    Only ``build_model`` is swapped: everything below it — tool schemas,
+    execution, parsing of the final answer — is production code.
     """
 
     def _run(
@@ -206,17 +207,17 @@ def run_agent(orm: PropertyORM) -> Callable[..., AgentRun]:
 
 
 def calls_search(**arguments: Any) -> list[Any]:
-    """Passo do roteiro: o modelo decide chamar a tool de busca."""
-    return [function_call("search_properties", arguments, call_id="call-busca")]
+    """Script step: the model decides to call the search tool."""
+    return [function_call("search_properties", arguments, call_id="call-search")]
 
 
 def calls_faq() -> list[Any]:
-    """Passo do roteiro: o modelo decide consultar as perguntas frequentes."""
+    """Script step: the model decides to consult the frequently asked questions."""
     return [function_call("faq_properties", {}, call_id="call-faq")]
 
 
 def answers(message: str, *, recommended: list[dict[str, Any]] | None = None) -> list[Any]:
-    """Passo do roteiro: o modelo devolve a resposta final no formato ``AgentReply``."""
+    """Script step: the model returns the final answer in the ``AgentReply`` format."""
     payload = {"message": message, "recommended_properties": recommended or []}
     return [assistant_message(json.dumps(payload, ensure_ascii=False))]
 
@@ -225,7 +226,7 @@ def answers(message: str, *, recommended: list[dict[str, Any]] | None = None) ->
 
 @pytest.fixture(autouse=True)
 def clear_faq_cache() -> Iterator[None]:
-    """``_load_faq`` é cacheado em processo; o cache não pode vazar entre testes."""
+    """``_load_faq`` is cached in-process; the cache must not leak between tests."""
     _load_faq.cache_clear()
     yield
     _load_faq.cache_clear()

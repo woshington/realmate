@@ -1,8 +1,8 @@
-"""Tool de busca de imóveis.
+"""Property search tool.
 
-As regras testadas aqui são as que impedem o assistente de inventar imóvel:
-sem filtro obrigatório não há busca, um imóvel já mostrado não volta, e cada
-resposta traz no máximo dois imóveis.
+The rules tested here are the ones that stop the assistant from inventing a
+property: no search without the required filters, an already shown property does
+not come back, and every answer carries at most two properties.
 """
 
 from decimal import Decimal
@@ -37,11 +37,11 @@ def search(
     return call_tool(search_properties, deps, **filters)
 
 
-class TestFiltrosObrigatorios:
-    """Sem os dados obrigatórios a tool recusa e manda perguntar ao cliente."""
+class TestRequiredFilters:
+    """Without the required data the tool refuses and tells the model to ask."""
 
     @pytest.mark.parametrize(
-        ("filtros", "dado_faltante"),
+        ("filters", "missing_data"),
         [
             ({}, "tipo de transação"),
             ({}, "bairro"),
@@ -51,23 +51,23 @@ class TestFiltrosObrigatorios:
             ({"transaction_type": "aluguel", "neighborhood": "Boa Viagem"}, "preço"),
         ],
     )
-    def test_orienta_a_perguntar_o_dado_que_falta(
+    def test_guides_the_model_to_ask_for_the_missing_data(
         self, call_tool: CallTool, orm: PropertyORM,
-        filtros: dict[str, Any], dado_faltante: str,
+        filters: dict[str, Any], missing_data: str,
     ) -> None:
-        result = search(call_tool, **filtros)
+        result = search(call_tool, **filters)
 
-        assert dado_faltante in result.guidance
+        assert missing_data in result.guidance
         assert "Pergunte ao cliente" in result.guidance
 
-    def test_nao_consulta_o_banco_quando_falta_filtro(
+    def test_does_not_query_the_database_when_a_filter_is_missing(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         search(call_tool, transaction_type="aluguel", neighborhood="Boa Viagem")
 
         assert orm.searched is False
 
-    def test_nao_devolve_imovel_quando_falta_filtro(
+    def test_returns_no_property_when_a_filter_is_missing(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(property_stub())
@@ -76,7 +76,7 @@ class TestFiltrosObrigatorios:
 
         assert result.properties == []
 
-    def test_busca_recusada_nao_gasta_orcamento_de_buscas(
+    def test_a_refused_search_does_not_spend_the_search_budget(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
@@ -85,20 +85,20 @@ class TestFiltrosObrigatorios:
 
         assert deps.searches_done == 0
 
-    @pytest.mark.parametrize("preco", [{"min_price": 1000}, {"max_price": 3000}])
-    def test_um_extremo_de_preco_ja_satisfaz_o_filtro_obrigatorio(
-        self, call_tool: CallTool, orm: PropertyORM, preco: dict[str, int],
+    @pytest.mark.parametrize("price", [{"min_price": 1000}, {"max_price": 3000}])
+    def test_one_price_bound_already_satisfies_the_required_filter(
+        self, call_tool: CallTool, orm: PropertyORM, price: dict[str, int],
     ) -> None:
         search(
             call_tool,
             transaction_type="aluguel",
             neighborhood="Boa Viagem",
-            **preco,
+            **price,
         )
 
         assert orm.searched is True
 
-    def test_codigo_dispensa_todos_os_outros_filtros(
+    def test_the_code_waives_every_other_filter(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         search(call_tool, code="IMV-001")
@@ -106,10 +106,10 @@ class TestFiltrosObrigatorios:
         assert orm.filters == {"code": "IMV-001"}
 
 
-class TestNaoRepeteImovel:
-    """Imóvel já apresentado na conversa não pode voltar."""
+class TestNoPropertyRepeats:
+    """A property already presented in the conversation must not come back."""
 
-    def test_exclui_os_imoveis_ja_recomendados_na_conversa(
+    def test_excludes_the_properties_already_recommended_in_the_conversation(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         orm.already_recommended(5, 9)
@@ -123,7 +123,7 @@ class TestNaoRepeteImovel:
 
         assert orm.excluded_ids == [5, 9]
 
-    def test_consulta_as_recomendacoes_da_conversa_certa(
+    def test_queries_the_recommendations_of_the_right_conversation(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=42)
@@ -132,7 +132,7 @@ class TestNaoRepeteImovel:
 
         orm.recommendation.objects.filter.assert_called_once_with(conversation_id=42)
 
-    def test_exclui_tambem_na_busca_por_codigo(
+    def test_excludes_on_a_search_by_code_as_well(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         orm.already_recommended(7)
@@ -141,7 +141,7 @@ class TestNaoRepeteImovel:
 
         assert orm.excluded_ids == [7]
 
-    def test_registra_os_codigos_apresentados_para_a_task(
+    def test_records_the_presented_codes_for_the_task(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
@@ -151,7 +151,7 @@ class TestNaoRepeteImovel:
 
         assert deps.presented_codes == ["IMV-007"]
 
-    def test_acumula_os_codigos_de_buscas_sucessivas(
+    def test_accumulates_the_codes_of_successive_searches(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
@@ -164,10 +164,10 @@ class TestNaoRepeteImovel:
         assert deps.presented_codes == ["IMV-001", "IMV-002"]
 
 
-class TestLimiteDeResultados:
-    """No máximo dois imóveis por resposta."""
+class TestResultLimit:
+    """At most two properties per answer."""
 
-    def test_devolve_no_maximo_dois_imoveis(
+    def test_returns_at_most_two_properties(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(5)])
@@ -181,16 +181,16 @@ class TestLimiteDeResultados:
 
         assert len(result.properties) == MAX_RESULTS == 2
 
-    def test_apresenta_os_dois_primeiros_da_query(
+    def test_presents_the_first_two_of_the_query(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(5)])
 
         result = search(call_tool, code="IMV-0")
 
-        assert [imovel.code for imovel in result.properties] == ["IMV-0", "IMV-1"]
+        assert [property_.code for property_ in result.properties] == ["IMV-0", "IMV-1"]
 
-    def test_o_limite_vale_tambem_para_os_codigos_apresentados(
+    def test_the_limit_also_applies_to_the_presented_codes(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
@@ -201,10 +201,10 @@ class TestLimiteDeResultados:
         assert len(deps.presented_codes) == MAX_RESULTS
 
 
-class TestOrcamentoDeBuscas:
-    """Uma mensagem do cliente não pode virar uma varredura no catálogo."""
+class TestSearchBudget:
+    """A single customer message must not turn into a catalog sweep."""
 
-    def test_recusa_a_busca_quando_o_orcamento_acabou(
+    def test_refuses_the_search_once_the_budget_is_spent(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
@@ -215,7 +215,7 @@ class TestOrcamentoDeBuscas:
         assert result.properties == []
         assert orm.searched is False
 
-    def test_nao_incrementa_o_contador_depois_do_limite(
+    def test_does_not_increment_the_counter_past_the_limit(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
@@ -224,7 +224,7 @@ class TestOrcamentoDeBuscas:
 
         assert deps.searches_done == MAX_SEARCHES_PER_RUN
 
-    def test_cada_busca_efetiva_consome_uma_unidade(
+    def test_every_effective_search_consumes_one_unit(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
@@ -235,10 +235,10 @@ class TestOrcamentoDeBuscas:
         assert deps.searches_done == 2
 
 
-class TestFiltrosDaQuery:
-    """O que o cliente informou vira filtro; o que ele não informou, não."""
+class TestQueryFilters:
+    """What the customer told us becomes a filter; what they did not, does not."""
 
-    def test_monta_a_query_com_todos_os_filtros_informados(
+    def test_builds_the_query_with_every_filter_provided(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         search(
@@ -258,7 +258,7 @@ class TestFiltrosDaQuery:
             "bedrooms": 3,
         }
 
-    def test_quartos_e_opcional_e_fica_fora_da_query_quando_ausente(
+    def test_bedrooms_is_optional_and_stays_out_of_the_query_when_absent(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         search(
@@ -270,7 +270,7 @@ class TestFiltrosDaQuery:
 
         assert "bedrooms" not in orm.filters
 
-    def test_a_faixa_informada_pelo_cliente_vira_filtro_da_query(
+    def test_the_range_given_by_the_customer_becomes_a_query_filter(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         search(
@@ -285,10 +285,10 @@ class TestFiltrosDaQuery:
         assert orm.filters["price__lte"] == 3000
 
 
-class TestOrientacaoDaResposta:
-    """O campo ``guidance`` é o que diz ao modelo o que fazer em seguida."""
+class TestAnswerGuidance:
+    """The ``guidance`` field is what tells the model what to do next."""
 
-    def test_orienta_a_apresentar_quando_encontra(
+    def test_guides_the_model_to_present_when_something_is_found(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(property_stub())
@@ -297,7 +297,7 @@ class TestOrientacaoDaResposta:
 
         assert result.guidance == FOUND
 
-    def test_orienta_a_ser_transparente_quando_nao_encontra(
+    def test_guides_the_model_to_be_transparent_when_nothing_is_found(
         self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         orm.returns()
@@ -307,7 +307,7 @@ class TestOrientacaoDaResposta:
         assert result.guidance == NOTHING_FOUND
         assert result.properties == []
 
-    def test_converte_o_imovel_para_o_formato_da_resposta(
+    def test_converts_the_property_to_the_answer_format(
         self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(
@@ -321,9 +321,9 @@ class TestOrientacaoDaResposta:
             )
         )
 
-        imovel = search(call_tool, code="IMV-001").properties[0]
+        found = search(call_tool, code="IMV-001").properties[0]
 
-        assert (imovel.code, imovel.price, imovel.bedrooms) == ("IMV-001", 2500, 2)
-        assert imovel.neighborhood == "Boa Viagem"
-        assert imovel.address == "Rua dos Navegantes, 150"
-        assert imovel.description == "Apartamento com varanda"
+        assert (found.code, found.price, found.bedrooms) == ("IMV-001", 2500, 2)
+        assert found.neighborhood == "Boa Viagem"
+        assert found.address == "Rua dos Navegantes, 150"
+        assert found.description == "Apartamento com varanda"

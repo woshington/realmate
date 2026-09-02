@@ -1,4 +1,4 @@
-"""Ferramental dos testes de webhook."""
+"""Test tooling for the webhook app."""
 
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
@@ -17,7 +17,7 @@ URL = reverse("webhooks:message")
 
 @pytest.fixture
 def scheduler() -> Iterator[MagicMock]:
-    """Impede que o teste enfileire tarefa de verdade no Celery."""
+    """Keep the test from enqueueing a real Celery task."""
 
     with patch("webhooks.views.schedule_conversation_processing") as mocked:
         yield mocked
@@ -25,7 +25,7 @@ def scheduler() -> Iterator[MagicMock]:
 
 @pytest.fixture
 def message_event() -> Callable[..., dict[str, Any]]:
-    """Payload de ``MESSAGE_RECEIVED`` no formato que o provedor entrega."""
+    """``MESSAGE_RECEIVED`` payload in the format the provider delivers."""
 
     def _event(
         message_id: str | None = None,

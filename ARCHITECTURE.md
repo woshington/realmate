@@ -19,9 +19,10 @@ flowchart TD
     
     E --> F1[Redis lock]
     E --> F2[Debounce / supersessão]
-    E --> F3[Monta histórico]
+    E --> F3[Coleta mensagens pendentes]
+    E --> F4[Garante a conversa no provider]
     
-    F1 & F2 & F3 --> G[Runner.run_sync]
+    F1 & F2 & F3 & F4 --> G[Runner.run_sync com external_conversation_id]
     G --> H[AI Agent]
     
     H --> I1[search_properties]
@@ -39,9 +40,12 @@ Em paralelo, o **Celery Beat** roda `properties.load_properties` diariamente às
 00:00 UTC, executando o ETL de imóveis (CSV + JSON).
 
 O webhook faz apenas trabalho síncrono barato (validar, `INSERT` e enfileirar)
-e responde `200` imediatamente. A chamada ao LLM leva segundos e pode falhar —
-fazê-la na thread do request transformaria latência do modelo em reentrega
-pelo provedor, o que geraria processamento duplicado.
+e responde `200` imediatamente. Nada que dependa de rede externa acontece no
+request: a chamada ao LLM leva segundos e pode falhar, e fazê-la na thread do
+request transformaria latência do modelo em reentrega pelo provedor, o que
+geraria processamento duplicado. Abrir a conversa no provider também é rede, e
+por isso mora na task.
+
 ### Apps
 
 | App             | Responsabilidade                                              |
@@ -89,12 +93,32 @@ faz a saída do LLM ser validada antes de virar registro no banco, e o schema da
 tools é derivado da assinatura das funções — não há dict de schema escrito à mão
 para divergir.
 
-**Histórico traduzido, não persistido no formato do SDK.**
-`assistant/helpers.to_model_messages` converte `Message` do banco para o formato
-do SDK. O banco guarda o domínio (papel, conteúdo, timestamp); trocar de SDK não
-deve exigir migração de dados. O histórico é limitado às
-`AGENT_HISTORY_MESSAGE_LIMIT` (30) mensagens mais recentes — teto de custo e de
-contexto, buscadas com `ORDER BY timestamp DESC LIMIT 30` + `reversed()`.
+**Histórico no provider, pendências no banco.** `Conversation` guarda um
+`external_conversation_id` — a conversa criada na Conversations API da OpenAI.
+Cada run é anexado a ela (`Runner.run_sync(..., conversation_id=...)`), então o
+modelo enxerga o que já foi dito sem que a task reenvie o histórico a cada
+mensagem.
+
+`ensure_external_conversation` abre essa conversa de forma preguiçosa, no
+primeiro processamento, e não na ingestão: o webhook precisa responder rápido e
+aceitar a mensagem mesmo com o provider fora do ar. A chamada acontece dentro do
+mesmo `try` do run, então uma indisponibilidade vira `FALLBACK_MESSAGE` como
+qualquer outra falha de IA. A gravação é um `UPDATE` condicionado a
+`external_conversation_id__isnull=True`: duas tasks concorrentes da mesma
+conversa convergem para um único id, sem checagem em Python.
+
+O que a task envia é só o que o assistente ainda não respondeu:
+`get_recent_messages` acha a última mensagem do assistente e devolve as
+mensagens do cliente posteriores a ela (ou a conversa inteira, se ainda não
+houve resposta). Isso substitui o antigo teto de 30 mensagens por rodada — o
+custo por mensagem deixa de crescer com o tamanho da conversa, e a rajada do
+debounce chega junta ao modelo, que é exatamente o recorte que interessa.
+
+O banco continua sendo a fonte de verdade do domínio: `Message` guarda papel,
+conteúdo e timestamp, e `assistant/helpers.to_model_messages` traduz para o
+formato do SDK na hora do envio. O provider é cache de contexto, não sistema de
+registro — trocar de SDK ou perder a conversa lá não exige migração de dados
+nem apaga o histórico exposto pela API de leitura.
 
 **Falha do agente vira `FALLBACK_MESSAGE`.** O cliente sempre recebe alguma
 resposta — ele não sabe que precisa reenviar. O fallback ainda pede os filtros
@@ -226,7 +250,8 @@ if has_newer_customer_message(conversation_id=..., message_id=trigger_id):
 
 Três mensagens rápidas agendam três tasks. As duas primeiras acordam, veem que
 há mensagem de cliente mais recente e retornam sem fazer nada. A terceira
-processa, com as três mensagens no histórico. Uma resposta.
+processa: como nenhuma resposta do assistente entrou no meio, as três mensagens
+ainda estão pendentes e vão juntas para o modelo. Uma resposta.
 
 **Custo:** N tasks para N mensagens, sendo N-1 no-ops. São tasks baratas (um
 `EXISTS` com índice) e o volume de rajada é o de um humano digitando.
@@ -249,7 +274,9 @@ mensagem já respondida. Não há janela de corrida entre o "já existe?" e o
 
 **2. Conversa (banco).** `Conversation.user_phone` é `unique`, então
 `get_or_create` é seguro sob concorrência — duas mensagens simultâneas do mesmo
-cliente não criam duas conversas.
+cliente não criam duas conversas. O `external_conversation_id` é preenchido pelo
+`UPDATE` condicional de `ensure_external_conversation`, então quem perde a
+corrida relê o id do vencedor em vez de sobrescrevê-lo.
 
 **3. Execução da task (Redis).** `process_conversation` abre com
 `cache.add(f"lock:{conversation_id}-{trigger_message_id}", "true", 15)`. `add` é
@@ -261,7 +288,7 @@ segunda desiste. O lock tem TTL de 15s e é liberado num `finally`.
 Carga repetida atualiza, nunca duplica; a garantia final é a `unique` em `code`.
 A escolha por **atualizar**, em vez de ignorar duplicatas, é deliberada: preço e
 disponibilidade mudam entre cargas, e um registro desatualizado faria o
-assistente informar preço errado — o pior tipo de erro possível neste domínio.
+assistente informar preço errado.
 
 **Recomendação (banco).** Mesmo padrão: o `UniqueConstraint(conversation,
 property)` faz uma segunda tentativa de registrar o mesmo imóvel na mesma
@@ -273,14 +300,8 @@ conversa não criar linha nova, sem exigir checagem em Python.
 
 | Decisão                              | Ganho                                       | Custo aceito                                    |
 | ------------------------------------ | ------------------------------------------- | ----------------------------------------------- |
-| Debounce por countdown + supersessão | Sem estado extra, simples de depurar        | N-1 tasks no-op; janela não atômica             |
 | Uma tabela para todos os imóveis     | Busca simples e rápida                      | Campos específicos de fonte não têm onde morar  |
 | FAQ inteiro no contexto              | Zero infra, sem falso negativo de busca     | Não escala além de ~centenas de entradas        |
 | Fallback em vez de propagar erro     | Cliente sempre recebe resposta              | Falha do modelo fica visível só em log          |
 
 ---
-
-## 8. Limitações conhecidas
-
-1. **Sem retry configurado nas tasks.** Falha de rede na chamada ao LLM cai
-   direto no fallback; 

@@ -1,18 +1,19 @@
-"""Configuração compartilhada da suíte.
+"""Shared test-suite configuration.
 
-Duas coisas moram aqui:
+Two things live here:
 
-1. O isolamento de infraestrutura — cache e tracing — que nenhum teste deve
-   precisar montar por conta própria.
-2. As fábricas de objetos de domínio (``make_conversation``, ``make_message``,
-   ``make_property``), usadas por mais de um app. Deixá-las aqui evita que cada
-   pacote de testes reinvente o mesmo ``objects.create``.
+1. The infrastructure isolation — cache and tracing — that no test should have
+   to set up on its own.
+2. The domain object factories (``make_conversation``, ``make_message``,
+   ``make_property``) used by more than one app. Keeping them here stops every
+   test package from reinventing the same ``objects.create``.
 """
 
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterator
+from unittest import mock
 
 import pytest
 from agents import set_tracing_disabled
@@ -26,15 +27,16 @@ from properties.models import Property
 PHONE = "+5581982860171"
 OTHER_PHONE = "+5581999998888"
 NOW = datetime(2026, 6, 2, 10, 0, tzinfo=timezone.utc)
+EXTERNAL_CONVERSATION_ID = "conv-test"
 
 
 @pytest.fixture(autouse=True, scope="session")
 def disable_agent_tracing() -> Iterator[None]:
-    """Nenhum teste pode falar com a OpenAI.
+    """No test is allowed to talk to OpenAI.
 
-    O SDK sobe um exportador de traces em thread de fundo que faz POST em
-    ``/v1/traces/ingest`` a cada run do agente. Desligado aqui, a suíte roda
-    offline e não depende de credencial válida.
+    The SDK starts a background trace exporter that POSTs to
+    ``/v1/traces/ingest`` on every agent run. Disabled here, the suite runs
+    offline and does not depend on a valid credential.
     """
 
     set_tracing_disabled(True)
@@ -43,15 +45,15 @@ def disable_agent_tracing() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def local_cache(settings: Any) -> None:
-    """Cache em memória, limpo a cada teste.
+    """In-memory cache, cleared on every test.
 
-    Em produção o cache é Redis (ver ``config.settings.CACHES``) e guarda o lock
-    de processamento da conversa. Teste unitário não deve depender de um serviço
-    de pé nem sujar a base de cache de quem está desenvolvendo.
+    In production the cache is Redis (see ``config.settings.CACHES``) and holds
+    the conversation processing lock. A unit test must not depend on a running
+    service nor pollute the developer's cache database.
 
-    Trocar ``settings.CACHES`` dispara o sinal ``setting_changed``, que faz o
-    Django reconstruir o handler — por isso a troca vale inclusive para quem já
-    importou ``django.core.cache.cache``.
+    Replacing ``settings.CACHES`` fires the ``setting_changed`` signal, which
+    makes Django rebuild the handler — so the swap applies even to code that
+    already imported ``django.core.cache.cache``.
     """
 
     settings.CACHES = {
@@ -63,15 +65,34 @@ def local_cache(settings: Any) -> None:
     cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def stub_external_conversation() -> Iterator[mock.AsyncMock]:
+    """Opening a conversation on the provider is a network call.
+
+    ``ensure_external_conversation`` asks the provider for a conversation id the
+    first time a conversation is processed. In the suite that id is handed out
+    locally, so the tests stay offline and every conversation ends up with a
+    predictable ``external_conversation_id``.
+    """
+
+    with mock.patch(
+        "conversations.services.create_conversation",
+        new=mock.AsyncMock(return_value=EXTERNAL_CONVERSATION_ID),
+    ) as create:
+        yield create
+
+
 @pytest.fixture
 def make_conversation() -> Callable[..., Conversation]:
     def _make(
         user_phone: str = PHONE,
         last_message_at: datetime | None = None,
+        external_conversation_id: str = EXTERNAL_CONVERSATION_ID,
     ) -> Conversation:
         return Conversation.objects.create(
             user_phone=user_phone,
             last_message_at=last_message_at,
+            external_conversation_id=external_conversation_id,
         )
 
     return _make
