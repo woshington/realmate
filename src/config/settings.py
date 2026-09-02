@@ -91,7 +91,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "encerrar-conversas-inativas": {
         "task": "conversations.expire_inactive_conversations",
-        "schedule": crontab(minute="/15"),
+        "schedule": crontab(minute="*/15"),
     },
 }
 
