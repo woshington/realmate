@@ -19,8 +19,13 @@ x-base: &base
     POSTGRES_HOST: db
     POSTGRES_PORT: 5432
     REDIS_URL: redis://redis:6379/0
+    CACHE_URL: redis://redis:6379/1
     DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+    OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3}
     PYTHONPATH: /app/src
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   depends_on:
     - db
     - redis

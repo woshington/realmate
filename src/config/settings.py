@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from celery.schedules import crontab
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = os.environ.get(
@@ -17,6 +19,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework",
+    "properties",
+    "conversations",
+    "webhooks",
 ]
 
 MIDDLEWARE = [
@@ -78,6 +84,36 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 
+CELERY_BEAT_SCHEDULE = {
+    "carregar-imoveis-diariamente": {
+        # Precisa bater com o `name` do @shared_task, não com o caminho do
+        # módulo: o worker registra a task pelo nome declarado.
+        "task": "properties.load_properties",
+        "schedule": crontab(minute="0", hour=0),
+    },
+}
+
+CACHE_URL = os.environ.get("CACHE_URL", "redis://localhost:6379/1")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": CACHE_URL,
+        "KEY_PREFIX": "realmate",
+    }
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+}
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+
+
 # --- Logging ---
 LOGGING = {
     "version": 1,
@@ -99,3 +135,16 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+
+DEBOUNCE_WINDOW_SECONDS = 10
+
+AGENT_HISTORY_MESSAGE_LIMIT = 30
+
+DATA_DIR = BASE_DIR / "data"
+PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"
+PROPERTIES_JSON_PATH = DATA_DIR / "imoveis_resumo.json"
+FAQ_JSON_PATH = DATA_DIR / "perguntas_frequentes.json"
+
+
+USE_OLLAMA=True

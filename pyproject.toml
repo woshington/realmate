@@ -10,20 +10,27 @@ dependencies = [
     "openai>=1.0",
     "celery>=5.4",
     "redis>=5.0",
+    "djangorestframework>=3.18.0",
+    "openai-agents>=0.22.0",
 ]
 
 [dependency-groups]
 dev = ["watchdog>=6.0.0"]
+test = [
+    "pytest>=8.3",
+    "pytest-django>=4.9",
+]
 typecheck = [
     "mypy[faster-cache]==1.15.0",
     "types-requests==2.32.0.20250306",
     "celery-types==0.23.0",
     "django-types==0.20.0",
+    "djangorestframework-types>=0.9.0",
 ]
 
 [tool.mypy]
 explicit_package_bases = true
-packages = "src"
+packages = ["assistant", "common", "config", "conversations", "properties", "webhooks"]
 namespace_packages = true
 mypy_path = ["src"]
 allow_redefinition = true
@@ -44,4 +51,11 @@ disallow_untyped_decorators = false
 disallow_any_unimported = false
 
 [tool.uv]
-default-groups = ["dev", "typecheck"]
+default-groups = ["dev", "test", "typecheck"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["src"]
+testpaths = ["src"]
+python_files = ["test_*.py"]
+addopts = "-q"
