@@ -19,7 +19,7 @@ class ConversationMessagesView(RetrieveAPIView):
             Conversation.objects.prefetch_related(
                 Prefetch(
                     "messages",
-                    queryset=Message.objects.order_by("timestamp"),
+                    queryset=Message.objects.order_by("timestamp", "id"),
                 ),
                 Prefetch(
                     "recommendations",

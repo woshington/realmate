@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import timedelta
 
 from agents import Runner
 from celery import shared_task
@@ -13,6 +14,7 @@ from conversations.enums import MessageRole
 from conversations.models import Message, Conversation
 from conversations.services import (
     add_recommendations,
+    close_inactive_conversations,
     ensure_external_conversation,
     get_recent_messages,
     has_newer_customer_message,
@@ -133,3 +135,23 @@ def process_conversation(
 
     finally:
         cache.delete(lock_id)
+
+
+@shared_task(name="conversations.expire_inactive_conversations")
+def expire_inactive_conversations() -> int:
+    """Varredura periódica que encerra os atendimentos abandonados.
+
+    O cliente que some não deixa a conversa aberta para sempre; e a próxima
+    mensagem dele reabre a conversa numa thread nova do provider, começando um
+    atendimento limpo. O retorno é um `int` porque precisa ser serializável em
+    JSON para o result backend do Celery.
+    """
+
+    closed = close_inactive_conversations(
+        idle_for=timedelta(hours=settings.INACTIVITY_TIMEOUT_HOURS),
+    )
+
+    if closed:
+        logger.info("%s conversa(s) encerrada(s) por inatividade.", closed)
+
+    return closed

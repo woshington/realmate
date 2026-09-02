@@ -19,7 +19,7 @@ import pytest
 from agents import set_tracing_disabled
 from django.core.cache import cache
 
-from conversations.enums import MessageRole
+from conversations.enums import ConversationStatus, MessageRole
 from conversations.models import Conversation, Message
 from properties.enums import TransactionType
 from properties.models import Property
@@ -87,12 +87,14 @@ def make_conversation() -> Callable[..., Conversation]:
     def _make(
         user_phone: str = PHONE,
         last_message_at: datetime | None = None,
-        external_conversation_id: str = EXTERNAL_CONVERSATION_ID,
+        external_conversation_id: str | None = EXTERNAL_CONVERSATION_ID,
+        status: str = ConversationStatus.ACTIVE,
     ) -> Conversation:
         return Conversation.objects.create(
             user_phone=user_phone,
             last_message_at=last_message_at,
             external_conversation_id=external_conversation_id,
+            status=status,
         )
 
     return _make
@@ -105,14 +107,28 @@ def make_message() -> Callable[..., Message]:
         timestamp: datetime = NOW,
         role: str = MessageRole.CUSTOMER,
         content: str = "Olá",
+        created_at: datetime | None = None,
     ) -> Message:
-        return Message.objects.create(
+        """``timestamp`` é o horário do provider; ``created_at``, o do INSERT.
+
+        Os dois se separam na vida real — e é por essa distinção que passa o
+        encerramento por inatividade. Como ``created_at`` é ``auto_now_add``,
+        só dá para escolhê-lo com um ``UPDATE`` depois da criação.
+        """
+
+        message = Message.objects.create(
             external_id=uuid.uuid4(),
             conversation=conversation,
             content=content,
             role=role,
             timestamp=timestamp,
         )
+
+        if created_at is not None:
+            Message.objects.filter(pk=message.pk).update(created_at=created_at)
+            message.created_at = created_at
+
+        return message
 
     return _make
 

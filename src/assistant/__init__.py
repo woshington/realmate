@@ -3,6 +3,12 @@ FALLBACK_MESSAGE = (
     "novo o que você procura (bairro, aluguel ou compra e faixa de preço)?"
 )
 
+CLOSING_MESSAGE = (
+    "Como faz um tempo que não recebo mensagem sua, vou encerrar este "
+    "atendimento por aqui. Se ainda precisar de ajuda para encontrar um "
+    "imóvel, é só mandar uma nova mensagem que eu retomo na hora."
+)
+
 SYSTEM_PROMPT = """\
 Você é o assistente virtual da Realmate, uma imobiliária localizada em Recife/PE. \
 Você atende clientes via WhatsApp, ajudando a encontrar imóveis para alugar ou \

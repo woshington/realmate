@@ -34,6 +34,16 @@ def get_agent() -> Agent[AssistantDeps]:
     )
 
 async def create_conversation() -> str | None:
-    client = get_client()
-    response = await client.conversations.create()
-    return getattr(response, "id")
+    """Abre uma conversa no provider.
+
+    O ``async with`` não é estilo: quem chama esta corrotina é um
+    ``asyncio.run`` dentro da task Celery, que fecha o event loop ao terminar.
+    Sem fechar o client aqui dentro, o ``httpx`` só solta a conexão quando o
+    coletor de lixo passa — já com o loop fechado — e o `aclose` estoura em
+    ``RuntimeError: Event loop is closed``, ruído que não derruba nada mas
+    polui o log de toda conversa nova.
+    """
+
+    async with get_client() as client:
+        response = await client.conversations.create()
+        return response.id

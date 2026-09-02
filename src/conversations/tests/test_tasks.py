@@ -9,16 +9,23 @@ customer without an answer when the AI fails (fallback).
 from datetime import timedelta
 from typing import Any, Callable
 from unittest import mock
+from uuid import uuid4
 
 import pytest
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 
 from django.core.cache import cache
+from django.utils import timezone
 
 from assistant import FALLBACK_MESSAGE
-from conversations.enums import MessageRole
+from conversations.enums import ConversationStatus, MessageRole
 from conversations.models import Conversation, Message
-from conversations.tasks import process_conversation, schedule_conversation_processing
+from conversations.services import register_message
+from conversations.tasks import (
+    expire_inactive_conversations,
+    process_conversation,
+    schedule_conversation_processing,
+)
 
 from .conftest import (
     EXTERNAL_CONVERSATION_ID,
@@ -469,3 +476,82 @@ class TestFallback:
             run_task(conversation, trigger)
 
         add.assert_called_once_with(conversation_id=conversation.pk, property_codes=[])
+
+
+class TestExpireInactiveConversations:
+    """The beat sweep: the schedule is a setting, the rule lives in the service."""
+
+    def test_closes_a_conversation_idle_past_the_configured_limit(
+        self, settings: Any,
+        make_conversation: MakeConversation, make_message: MakeMessage,
+    ) -> None:
+        settings.INACTIVITY_TIMEOUT_HOURS = 24
+        conversation = make_conversation()
+        make_message(conversation, created_at=timezone.now() - timedelta(hours=25))
+
+        assert expire_inactive_conversations() == 1
+
+        conversation.refresh_from_db()
+        assert conversation.status == ConversationStatus.CLOSED
+
+    def test_the_limit_comes_from_the_settings_and_not_from_a_hardcoded_value(
+        self, settings: Any,
+        make_conversation: MakeConversation, make_message: MakeMessage,
+    ) -> None:
+        settings.INACTIVITY_TIMEOUT_HOURS = 48
+        conversation = make_conversation()
+        make_message(conversation, created_at=timezone.now() - timedelta(hours=25))
+
+        assert expire_inactive_conversations() == 0
+
+        conversation.refresh_from_db()
+        assert conversation.status == ConversationStatus.ACTIVE
+
+    def test_a_sweep_with_nothing_to_close_is_a_no_op(
+        self, make_conversation: MakeConversation, make_message: MakeMessage,
+    ) -> None:
+        conversation = make_conversation()
+        make_message(conversation)
+
+        assert expire_inactive_conversations() == 0
+        assert Message.objects.filter(role=MessageRole.ASSISTANT).count() == 0
+
+
+class TestServiceLifecycle:
+    """One full cycle: served, closed by the beat, reopened by the customer.
+
+    This is what closing is for: the customer who comes back is not answered on
+    top of a service that ended days ago — neither on the provider side, which
+    gets a brand new conversation, nor on ours, where the closing message is
+    the cut point of the history sent to the model.
+    """
+
+    def test_a_reopened_conversation_starts_a_new_service(
+        self, settings: Any, runner: FakeRunner,
+        stub_external_conversation: mock.AsyncMock,
+    ) -> None:
+        settings.INACTIVITY_TIMEOUT_HOURS = 24
+        first = register_message(
+            external_id=uuid4(), user_phone=PHONE,
+            content="quero alugar", timestamp=timezone.now(),
+        )
+        run_task(first.conversation, first.message)
+
+        # The customer walks away: the whole service ages past the limit.
+        Message.objects.filter(conversation=first.conversation).update(
+            created_at=timezone.now() - timedelta(hours=30),
+        )
+
+        assert expire_inactive_conversations() == 1
+
+        came_back = register_message(
+            external_id=uuid4(), user_phone=PHONE,
+            content="voltei", timestamp=timezone.now(),
+        )
+        run_task(came_back.conversation, came_back.message)
+
+        conversation = Conversation.objects.get(pk=first.conversation.pk)
+        assert conversation.status == ConversationStatus.ACTIVE
+        # A second call means the old provider conversation was left behind.
+        assert stub_external_conversation.await_count == 2
+        assert [item["content"] for item in runner.input_sent] == ["voltei"]
