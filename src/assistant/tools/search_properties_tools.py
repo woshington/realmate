@@ -113,10 +113,10 @@ def search_properties(
     }
 
     if min_price is not None:
-        params["price__gte"] = Decimal(str(min_price))
+        params["price__gte"] = float(str(min_price))
 
     if max_price is not None:
-        params["price__lte"] = Decimal(str(max_price))
+        params["price__lte"] = float(str(max_price))
 
     if bedrooms is not None:
         params["bedrooms"] = bedrooms

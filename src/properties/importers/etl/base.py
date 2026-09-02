@@ -52,7 +52,6 @@ class PropertyImporter(ABC):
                 "address": data.address,
                 "description": data.description,
                 "source": data.source,
-                "source_reference": data.source_reference,
                 "imported_at": imported_at,
             },
         )

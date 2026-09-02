@@ -10,7 +10,6 @@ dependencies = [
     "openai>=1.0",
     "celery>=5.4",
     "redis>=5.0",
-    "pydantic-ai>=2.8.0",
     "djangorestframework>=3.18.0",
     "openai-agents>=0.22.0",
 ]

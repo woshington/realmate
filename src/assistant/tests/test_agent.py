@@ -1,186 +1,285 @@
+"""Comportamento do agente ponta a ponta, com modelo roteirizado.
+
+Aqui o agente é o de produção — mesmas tools, mesmo prompt, mesmo
+``output_type``. Só o modelo é trocado por um roteiro determinístico, o que
+permite afirmar duas coisas que o teste de tool sozinho não alcança: qual tool
+o agente expôs/executou, e o que voltou para o modelo depois da execução.
+"""
+
 import json
 from typing import Any, Callable
-from unittest import mock
-from unittest.mock import MagicMock
 
-import pytest
-from pydantic_ai import Agent
-from pydantic_ai.agent import AgentRunResult
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelResponse,
-    TextPart,
-    ToolCallPart,
-    UserPromptPart,
-)
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from agents import Agent
+from agents.testing import ScriptedModel
 
-from assistant.agent import build_model, reply_from_text
+from assistant import SYSTEM_PROMPT
+from assistant.agent import get_agent
 from assistant.schemas import AgentReply
-from assistant.tools import AssistantDeps, faq_properties, search_properties
+from assistant.tools import AssistantDeps
+
+from .conftest import AgentRun, PropertyORM, answers, calls_faq, calls_search
+
+RunAgent = Callable[..., AgentRun]
+MakeProperty = Callable[..., Any]
 
 
-class TestReplyFromText:
-    def test_valid_json_returns_parsed_agent_reply(self) -> None:
-        text = json.dumps({"message": "Olá, como posso ajudar?"})
-
-        result = reply_from_text(text)
-
-        assert isinstance(result, AgentReply)
-        assert result.message == "Olá, como posso ajudar?"
-
-    def test_plain_text_is_wrapped_in_agent_reply(self) -> None:
-        result = reply_from_text("Bom dia!")
-
-        assert isinstance(result, AgentReply)
-        assert result.message == "Bom dia!"
-        assert result.recommended_properties == []
-
-
-class TestBuildModel:
-    def test_use_ollama_true_returns_ollama_model(
-        self, monkeypatch: pytest.MonkeyPatch,
+class TestConfiguracaoDoAgente:
+    def test_expoe_exatamente_as_duas_tools_do_dominio(
+        self, run_agent: RunAgent,
     ) -> None:
-        monkeypatch.setattr("assistant.agent.settings.USE_OLLAMA", True)
-        monkeypatch.setattr("assistant.agent.settings.OLLAMA_MODEL", "llama3.1")
-        monkeypatch.setattr(
-            "assistant.agent.settings.OLLAMA_BASE_URL", "http://localhost:11434"
-        )
-        monkeypatch.setattr("assistant.agent.settings.OLLAMA_API_KEY", "fake-key")
+        run = run_agent(answers("Olá!"))
 
-        with mock.patch("assistant.agent.OllamaProvider") as mock_provider_cls, \
-                mock.patch("assistant.agent.OllamaModel") as mock_model_cls:
-            build_model()
+        assert [tool.name for tool in run.first_call.tools] == [
+            "search_properties",
+            "faq_properties",
+        ]
 
-        mock_provider_cls.assert_called_once_with(
-            base_url="http://localhost:11434", api_key="fake-key",
-        )
-        mock_model_cls.assert_called_once_with(
-            "llama3.1", provider=mock_provider_cls.return_value,
-        )
+    def test_usa_o_prompt_do_dominio_como_instrucao(self, run_agent: RunAgent) -> None:
+        run = run_agent(answers("Olá!"))
 
-    def test_use_ollama_false_returns_openai_model(
-        self, monkeypatch: pytest.MonkeyPatch,
+        assert run.first_call.system_instructions == SYSTEM_PROMPT
+
+    def test_exige_a_resposta_no_formato_agent_reply(
+        self, run_agent: RunAgent,
     ) -> None:
-        monkeypatch.setattr("assistant.agent.settings.USE_OLLAMA", False)
-        monkeypatch.setattr("assistant.agent.settings.OPENAI_API_KEY", "sk-fake")
+        run = run_agent(answers("Olá!"))
 
-        with mock.patch("assistant.agent.OpenAIProvider") as mock_provider_cls, \
-                mock.patch("assistant.agent.OpenAIChatModel") as mock_model_cls:
-            build_model()
+        assert run.first_call.output_schema is not None
+        assert isinstance(run.reply, AgentReply)
 
-        mock_provider_cls.assert_called_once_with(api_key="sk-fake")
-        mock_model_cls.assert_called_once_with(
-            "gpt-5.2", provider=mock_provider_cls.return_value,
-        )
+    def test_get_agent_devolve_uma_instancia_nova_a_cada_chamada(self) -> None:
+        """Cada conversa roda com o seu próprio agente: nada de estado compartilhado."""
+
+        model = ScriptedModel()
+
+        import assistant.agent as agent_module
+        from unittest import mock
+
+        with mock.patch.object(agent_module, "build_model", return_value=model):
+            first, second = get_agent(), get_agent()
+
+        assert isinstance(first, Agent)
+        assert first is not second
 
 
-class TestAgentRouting:
-    def test_only_search_and_faq_tools_are_registered(
-        self, agent: Agent[Any, Any],
+class TestRoteamentoDeTools:
+    """A pergunta do cliente tem que cair na tool certa."""
+
+    def test_pedido_de_imovel_vai_para_a_busca(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
-        assert registered_tools_by_name(agent) == {
-            "search_properties": search_properties,
-            "faq_properties": faq_properties,
-        }
+        orm.returns(property_stub(code="IMV-001"))
 
-    def test_search_properties_tool_is_called_for_property_search(
-        self,
-        agent: Agent[Any, Any],
-        mock_property: MagicMock,
-        mock_recommendation: MagicMock,
-    ) -> None:
-        route_by_keyword = model_that_routes_on_keyword(
-            keyword="apartamento",
-            tool_call_if_matched=ToolCallPart(
-                tool_name="search_properties",
-                args={
-                    "transaction_type": "aluguel",
-                    "neighborhood": "Boa Viagem",
-                    "min_price": 1000,
-                },
+        run = run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
             ),
-            tool_call_if_not_matched=ToolCallPart(tool_name="faq_properties", args={}),
+            answers("Encontrei o IMV-001."),
+            message="Quero alugar em Boa Viagem até 3000",
         )
 
-        with agent.override(model=FunctionModel(route_by_keyword)):
-            result = agent.run_sync(
-                "Quero um apartamento para alugar em Boa Viagem",
-                deps=AssistantDeps(conversation_id=1),
-            )
+        assert run.tools_called == ["search_properties"]
 
-        assert tool_names_called_during(result) == ["search_properties"]
-        mock_property.objects.filter.assert_called_once_with(
-            transaction_type="aluguel",
-            neighborhood__iexact="Boa Viagem",
-            price__gte=1000,
-        )
-
-    def test_faq_properties_tool_is_called_for_faq_questions(
-        self, agent: Agent[Any, Any], mock_faq: MagicMock,
+    def test_duvida_sobre_a_imobiliaria_vai_para_o_faq(
+        self, run_agent: RunAgent, faq_file: Callable[..., Any],
     ) -> None:
-        route_by_keyword = model_that_routes_on_keyword(
-            keyword="documento",
-            tool_call_if_matched=ToolCallPart(tool_name="faq_properties", args={}),
-            tool_call_if_not_matched=ToolCallPart(
-                tool_name="search_properties", args={"code": "IMV-001"},
+        faq_file({"pergunta": "Quais documentos?", "resposta": "RG e CPF."})
+
+        run = run_agent(
+            calls_faq(),
+            answers("Você precisa de RG e CPF."),
+            message="Que documento preciso para alugar?",
+        )
+
+        assert run.tools_called == ["faq_properties"]
+
+    def test_faq_devolve_a_base_para_o_modelo(
+        self, run_agent: RunAgent, faq_file: Callable[..., Any],
+    ) -> None:
+        faq_file({"pergunta": "Quais documentos?", "resposta": "RG e CPF."})
+
+        run = run_agent(
+            calls_faq(),
+            answers("Você precisa de RG e CPF."),
+            message="Que documento preciso?",
+        )
+
+        entradas = run.tool_outputs[0]
+        assert [entrada.answer for entrada in entradas] == ["RG e CPF."]
+
+    def test_conversa_sem_pedido_nao_chama_tool_nenhuma(
+        self, run_agent: RunAgent, orm: PropertyORM,
+    ) -> None:
+        run = run_agent(answers("Olá! Como posso ajudar?"), message="bom dia")
+
+        assert run.tools_called == []
+        assert orm.searched is False
+
+
+class TestPedidoDeInformacaoFaltante:
+    """Sem filtro obrigatório, o agente pergunta em vez de buscar."""
+
+    def test_a_tool_devolve_ao_modelo_a_orientacao_de_perguntar(
+        self, run_agent: RunAgent, orm: PropertyORM,
+    ) -> None:
+        run = run_agent(
+            calls_search(transaction_type="aluguel"),
+            answers("Em qual bairro você procura?"),
+            message="Quero alugar um apartamento",
+        )
+
+        orientacao = run.tool_outputs[0].guidance
+        assert "bairro" in orientacao
+        assert "preço" in orientacao
+        assert "Pergunte ao cliente" in orientacao
+
+    def test_nenhum_imovel_e_recomendado_quando_falta_filtro(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(property_stub(code="IMV-001"))
+        deps = AssistantDeps(conversation_id=1)
+
+        run = run_agent(
+            calls_search(transaction_type="aluguel"),
+            answers("Em qual bairro você procura?"),
+            message="Quero alugar um apartamento",
+            deps=deps,
+        )
+
+        assert run.reply.recommended_properties == []
+        assert deps.presented_codes == []
+
+    def test_a_orientacao_chega_ao_modelo_na_rodada_seguinte(
+        self, run_agent: RunAgent, orm: PropertyORM,
+    ) -> None:
+        """A pergunta ao cliente nasce do retorno da tool, não de adivinhação."""
+
+        run = run_agent(
+            calls_search(neighborhood="Boa Viagem"),
+            answers("É para alugar ou comprar? E qual faixa de preço?"),
+            message="Quero algo em Boa Viagem",
+        )
+
+        segunda_rodada = json.dumps(run.model.calls[1].input, ensure_ascii=False)
+        assert "tipo de transação" in segunda_rodada
+
+
+class TestNaoRepeteImovelNaConversa:
+    def test_os_imoveis_ja_recomendados_saem_da_query(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.already_recommended(1, 2)
+        orm.returns(property_stub(code="IMV-003"))
+
+        run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
             ),
+            answers("Tenho o IMV-003."),
+            message="Me mostre outras opções",
         )
 
-        with agent.override(model=FunctionModel(route_by_keyword)):
-            result = agent.run_sync(
-                "Quais documentos preciso para alugar?",
-                deps=AssistantDeps(conversation_id=1),
-            )
+        assert orm.excluded_ids == [1, 2]
 
-        assert tool_names_called_during(result) == ["faq_properties"]
-        mock_faq.assert_called_once()
+    def test_nova_busca_na_mesma_conversa_nao_repete_o_ja_apresentado(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.already_recommended(1)
+        orm.returns(property_stub(code="IMV-002"))
+        deps = AssistantDeps(conversation_id=1, presented_codes=["IMV-001"])
 
-
-# ---- Helpers usados só nos testes acima ----------------------------------
-
-def registered_tools_by_name(agent: Agent[Any, Any]) -> dict[str, Any]:
-    return {
-        name: tool.function
-        for toolset in agent.toolsets
-        for name, tool in getattr(toolset, "tools", {}).items()
-    }
-
-
-def model_that_routes_on_keyword(
-    keyword: str,
-    tool_call_if_matched: ToolCallPart,
-    tool_call_if_not_matched: ToolCallPart,
-) -> Callable[[list[ModelMessage], AgentInfo], ModelResponse]:
-    def fake_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        already_called_a_tool = any(
-            isinstance(part, ToolCallPart) for m in messages for part in m.parts
+        run = run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
+            ),
+            answers("Tenho também o IMV-002."),
+            message="Tem mais alguma opção?",
+            deps=deps,
         )
-        if already_called_a_tool:
-            return ModelResponse(parts=[TextPart("Pronto!")])
 
-        user_message = first_user_prompt_in(messages).lower()
-        chosen_tool_call = (
-            tool_call_if_matched if keyword in user_message else tool_call_if_not_matched
+        apresentados = [imovel.code for imovel in run.tool_outputs[0].properties]
+        assert "IMV-001" not in apresentados
+        assert apresentados == ["IMV-002"]
+
+
+class TestLimiteDeImoveisPorResposta:
+    def test_o_modelo_recebe_no_maximo_dois_imoveis(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(6)])
+
+        run = run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
+            ),
+            answers("Encontrei duas opções."),
+            message="Quero alugar em Boa Viagem até 3000",
         )
-        return ModelResponse(parts=[chosen_tool_call])
 
-    return fake_model
+        assert len(run.tool_outputs[0].properties) == 2
+
+    def test_a_conversa_registra_no_maximo_dois_codigos_por_busca(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(6)])
+        deps = AssistantDeps(conversation_id=1)
+
+        run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
+            ),
+            answers("Encontrei duas opções."),
+            message="Quero alugar em Boa Viagem até 3000",
+            deps=deps,
+        )
+
+        assert deps.presented_codes == ["IMV-0", "IMV-1"]
 
 
-def first_user_prompt_in(messages: list[ModelMessage]) -> str:
-    return next(
-        part.content
-        for message in messages
-        for part in message.parts
-        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
-    )
+class TestRespostaFinal:
+    def test_a_resposta_vira_agent_reply_com_os_imoveis_recomendados(
+        self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(property_stub(code="IMV-001"))
 
+        run = run_agent(
+            calls_search(
+                transaction_type="aluguel",
+                neighborhood="Boa Viagem",
+                max_price=3000,
+            ),
+            answers(
+                "Encontrei o IMV-001.",
+                recommended=[
+                    {
+                        "code": "IMV-001",
+                        "price": 2500,
+                        "neighborhood": "Boa Viagem",
+                        "bedrooms": 2,
+                        "address": "Rua dos Navegantes, 150",
+                        "description": "Apartamento com varanda",
+                    }
+                ],
+            ),
+            message="Quero alugar em Boa Viagem até 3000",
+        )
 
-def tool_names_called_during(result: AgentRunResult[Any]) -> list[str]:
-    return [
-        part.tool_name
-        for message in result.all_messages()
-        for part in message.parts
-        if isinstance(part, ToolCallPart)
-    ]
+        assert run.reply.message == "Encontrei o IMV-001."
+        assert [imovel.code for imovel in run.reply.recommended_properties] == ["IMV-001"]
+
+    def test_resposta_sem_imovel_traz_a_lista_vazia(
+        self, run_agent: RunAgent, orm: PropertyORM,
+    ) -> None:
+        run = run_agent(answers("Olá! Como posso ajudar?"))
+
+        assert run.reply.recommended_properties == []

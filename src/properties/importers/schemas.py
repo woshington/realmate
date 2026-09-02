@@ -12,7 +12,6 @@ class PropertyData(BaseModel):
     address: str
     description: str
     source: str
-    source_reference: str
 
 
 class ImportResult(BaseModel):

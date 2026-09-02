@@ -1,6 +1,7 @@
 import uuid
-
 from django.db import models
+
+
 
 from common.models import TimestampedModel
 from common.validators import phone_validator
@@ -42,7 +43,6 @@ class Conversation(TimestampedModel):
 
     def __str__(self) -> str:
         return self.user_phone
-
 
 class Message(TimestampedModel):
     recommendations: models.Manager["PropertyRecommendation"]
@@ -88,14 +88,6 @@ class PropertyRecommendation(TimestampedModel):
         Property,
         on_delete=models.PROTECT,
         related_name="recommendations",
-    )
-    message = models.ForeignKey(
-        Message,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="recommendations",
-        help_text="Mensagem do assistente que apresentou o imóvel.",
     )
 
     class Meta:

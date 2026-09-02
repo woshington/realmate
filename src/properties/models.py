@@ -38,11 +38,7 @@ class Property(TimestampedModel):
         default=PropertySource.CSV,
         verbose_name="origem da carga",
     )
-    source_reference = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Arquivo, endpoint ou identificador de onde o registro veio.",
-    )
+
     imported_at = models.DateTimeField(
         null=True,
         blank=True,

@@ -1,267 +1,329 @@
+"""Tool de busca de imóveis.
+
+As regras testadas aqui são as que impedem o assistente de inventar imóvel:
+sem filtro obrigatório não há busca, um imóvel já mostrado não volta, e cada
+resposta traz no máximo dois imóveis.
+"""
+
 from decimal import Decimal
-from types import SimpleNamespace
-from typing import Iterator, cast
-from unittest import mock
-from unittest.mock import MagicMock
+from typing import Any, Callable
 
 import pytest
-from pydantic_ai import ModelRetry, RunContext
 
 from assistant.tools import (
     FOUND,
-    MAX_RESULTS,
-    MAX_SEARCHES_PER_RUN,
     NOTHING_FOUND,
     SEARCH_BUDGET_SPENT,
     AssistantDeps,
+)
+from assistant.tools.search_properties_tools import (
+    MAX_RESULTS,
+    MAX_SEARCHES_PER_RUN,
     search_properties,
 )
 
+from .conftest import PropertyORM
 
-# ---- Helpers ---------------------------------------------------------------
-
-def context_with(deps: AssistantDeps) -> RunContext[AssistantDeps]:
-    """Duck-type do ``RunContext``: as tools só leem ``ctx.deps``."""
-    return cast(RunContext[AssistantDeps], SimpleNamespace(deps=deps))
+CallTool = Callable[..., Any]
+MakeProperty = Callable[..., Any]
 
 
-def property_stub(code: str = "IMV-001", price: int = 2000,
-                  neighborhood: str = "Boa Viagem", bedrooms: int = 2,
-                  address: str = "Rua X, 100",
-                  description: str = "Ótimo imóvel") -> SimpleNamespace:
-    return SimpleNamespace(
-        code=code, price=price, neighborhood=neighborhood,
-        bedrooms=bedrooms, address=address, description=description,
+def search(
+    call_tool: CallTool,
+    deps: AssistantDeps | None = None,
+    /,
+    **filters: Any,
+) -> Any:
+    return call_tool(search_properties, deps, **filters)
+
+
+class TestFiltrosObrigatorios:
+    """Sem os dados obrigatórios a tool recusa e manda perguntar ao cliente."""
+
+    @pytest.mark.parametrize(
+        ("filtros", "dado_faltante"),
+        [
+            ({}, "tipo de transação"),
+            ({}, "bairro"),
+            ({}, "preço"),
+            ({"neighborhood": "Boa Viagem", "max_price": 3000}, "tipo de transação"),
+            ({"transaction_type": "aluguel", "max_price": 3000}, "bairro"),
+            ({"transaction_type": "aluguel", "neighborhood": "Boa Viagem"}, "preço"),
+        ],
     )
-
-
-@pytest.fixture
-def mock_property() -> Iterator[MagicMock]:
-    with mock.patch("assistant.tools.Property") as mock_property_cls:
-        yield mock_property_cls
-
-
-@pytest.fixture
-def mock_recommendation() -> Iterator[MagicMock]:
-    with mock.patch("assistant.tools.PropertyRecommendation") as mock_recommendation_cls:
-        mock_recommendation_cls.objects.filter.return_value.values_list.return_value = []
-        yield mock_recommendation_cls
-
-
-def stub_found_properties(
-    mock_property: MagicMock, properties: list[SimpleNamespace],
-) -> None:
-    mock_property.objects.filter.return_value.exclude.return_value = properties
-
-
-# ---- search_properties: orçamento de buscas --------------------------------
-
-class TestSearchBudget:
-    def test_refuses_to_search_once_budget_is_spent(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_orienta_a_perguntar_o_dado_que_falta(
+        self, call_tool: CallTool, orm: PropertyORM,
+        filtros: dict[str, Any], dado_faltante: str,
     ) -> None:
-        deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
+        result = search(call_tool, **filtros)
 
-        result = search_properties(context_with(deps), code="IMV-001")
+        assert dado_faltante in result.guidance
+        assert "Pergunte ao cliente" in result.guidance
 
-        assert result.guidance == SEARCH_BUDGET_SPENT
+    def test_nao_consulta_o_banco_quando_falta_filtro(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        search(call_tool, transaction_type="aluguel", neighborhood="Boa Viagem")
+
+        assert orm.searched is False
+
+    def test_nao_devolve_imovel_quando_falta_filtro(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(property_stub())
+
+        result = search(call_tool, transaction_type="aluguel")
+
         assert result.properties == []
-        mock_property.objects.filter.assert_not_called()
 
-    def test_does_not_increment_searches_done_once_budget_is_spent(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
-
-        search_properties(context_with(deps), code="IMV-001")
-
-        assert deps.searches_done == MAX_SEARCHES_PER_RUN
-
-
-# ---- search_properties: busca por código -----------------------------------
-
-class TestSearchByCode:
-    def test_filters_only_by_code_ignoring_other_params(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [property_stub(code="IMV-001")])
-
-        search_properties(
-            context_with(deps),
-            code="IMV-001",
-            transaction_type="aluguel",
-            neighborhood="Boa Viagem",
-        )
-
-        mock_property.objects.filter.assert_called_once_with(code="IMV-001")
-
-    def test_excludes_properties_already_recommended_in_conversation(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        mock_recommendation.objects.filter.return_value.values_list.return_value = [5, 9]
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [property_stub()])
-
-        search_properties(context_with(deps), code="IMV-001")
-
-        mock_recommendation.objects.filter.assert_called_once_with(conversation_id=1)
-        mock_property.objects.filter.return_value.exclude.assert_called_once_with(
-            id__in=[5, 9]
-        )
-
-    def test_increments_searches_done(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [property_stub()])
-
-        search_properties(context_with(deps), code="IMV-001")
-
-        assert deps.searches_done == 1
-
-
-# ---- search_properties: filtros obrigatórios --------------------------------
-
-class TestSearchRequiredFilters:
-    def test_raises_retry_when_all_required_filters_are_missing(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_busca_recusada_nao_gasta_orcamento_de_buscas(
+        self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
 
-        with pytest.raises(ModelRetry):
-            search_properties(context_with(deps))
-
-    def test_raises_retry_when_price_range_is_missing(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-
-        with pytest.raises(ModelRetry):
-            search_properties(
-                context_with(deps),
-                transaction_type="aluguel",
-                neighborhood="Boa Viagem",
-            )
-
-    def test_does_not_count_a_refused_search_against_the_budget(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
-    ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-
-        with pytest.raises(ModelRetry):
-            search_properties(context_with(deps))
+        search(call_tool, deps, transaction_type="aluguel")
 
         assert deps.searches_done == 0
 
-    def test_accepts_only_min_price_as_satisfying_the_price_filter(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    @pytest.mark.parametrize("preco", [{"min_price": 1000}, {"max_price": 3000}])
+    def test_um_extremo_de_preco_ja_satisfaz_o_filtro_obrigatorio(
+        self, call_tool: CallTool, orm: PropertyORM, preco: dict[str, int],
     ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [])
-
-        search_properties(
-            context_with(deps),
+        search(
+            call_tool,
             transaction_type="aluguel",
             neighborhood="Boa Viagem",
-            min_price=Decimal("1000"),
+            **preco,
         )
 
-        mock_property.objects.filter.assert_called_once_with(
-            transaction_type="aluguel",
-            neighborhood__iexact="Boa Viagem",
-            price__gte=Decimal("1000"),
-        )
+        assert orm.searched is True
 
-
-# ---- search_properties: busca por características ---------------------------
-
-class TestSearchByCharacteristics:
-    def test_builds_filters_from_all_given_params(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_codigo_dispensa_todos_os_outros_filtros(
+        self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [])
+        search(call_tool, code="IMV-001")
 
-        search_properties(
-            context_with(deps),
-            transaction_type="venda",
-            neighborhood="Boa Viagem",
-            min_price=Decimal("100000"),
-            max_price=Decimal("300000"),
-            bedrooms=3,
-        )
+        assert orm.filters == {"code": "IMV-001"}
 
-        mock_property.objects.filter.assert_called_once_with(
-            transaction_type="venda",
-            neighborhood__iexact="Boa Viagem",
-            price__gte=Decimal("100000"),
-            price__lte=Decimal("300000"),
-            bedrooms=3,
-        )
 
-    def test_limits_results_to_max_results(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+class TestNaoRepeteImovel:
+    """Imóvel já apresentado na conversa não pode voltar."""
+
+    def test_exclui_os_imoveis_ja_recomendados_na_conversa(
+        self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(
-            mock_property,
-            [property_stub(code=f"IMV-{i}") for i in range(5)],
-        )
+        orm.already_recommended(5, 9)
 
-        result = search_properties(
-            context_with(deps),
+        search(
+            call_tool,
             transaction_type="aluguel",
             neighborhood="Boa Viagem",
-            min_price=Decimal("1000"),
+            max_price=3000,
         )
 
-        assert len(result.properties) == MAX_RESULTS
+        assert orm.excluded_ids == [5, 9]
 
-    def test_records_presented_codes_on_deps(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_consulta_as_recomendacoes_da_conversa_certa(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        deps = AssistantDeps(conversation_id=42)
+
+        search(call_tool, deps, code="IMV-001")
+
+        orm.recommendation.objects.filter.assert_called_once_with(conversation_id=42)
+
+    def test_exclui_tambem_na_busca_por_codigo(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        orm.already_recommended(7)
+
+        search(call_tool, code="IMV-001")
+
+        assert orm.excluded_ids == [7]
+
+    def test_registra_os_codigos_apresentados_para_a_task(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [property_stub(code="IMV-007")])
+        orm.returns(property_stub(code="IMV-007"))
 
-        search_properties(
-            context_with(deps),
-            transaction_type="aluguel",
-            neighborhood="Boa Viagem",
-            min_price=Decimal("1000"),
-        )
+        search(call_tool, deps, code="IMV-007")
 
         assert deps.presented_codes == ["IMV-007"]
 
-    def test_returns_found_guidance_when_properties_are_returned(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_acumula_os_codigos_de_buscas_sucessivas(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [property_stub()])
 
-        result = search_properties(
-            context_with(deps),
+        orm.returns(property_stub(code="IMV-001"))
+        search(call_tool, deps, code="IMV-001")
+        orm.returns(property_stub(code="IMV-002"))
+        search(call_tool, deps, code="IMV-002")
+
+        assert deps.presented_codes == ["IMV-001", "IMV-002"]
+
+
+class TestLimiteDeResultados:
+    """No máximo dois imóveis por resposta."""
+
+    def test_devolve_no_maximo_dois_imoveis(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(5)])
+
+        result = search(
+            call_tool,
             transaction_type="aluguel",
             neighborhood="Boa Viagem",
-            min_price=Decimal("1000"),
+            max_price=3000,
         )
+
+        assert len(result.properties) == MAX_RESULTS == 2
+
+    def test_apresenta_os_dois_primeiros_da_query(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(5)])
+
+        result = search(call_tool, code="IMV-0")
+
+        assert [imovel.code for imovel in result.properties] == ["IMV-0", "IMV-1"]
+
+    def test_o_limite_vale_tambem_para_os_codigos_apresentados(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        deps = AssistantDeps(conversation_id=1)
+        orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(5)])
+
+        search(call_tool, deps, code="IMV-0")
+
+        assert len(deps.presented_codes) == MAX_RESULTS
+
+
+class TestOrcamentoDeBuscas:
+    """Uma mensagem do cliente não pode virar uma varredura no catálogo."""
+
+    def test_recusa_a_busca_quando_o_orcamento_acabou(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
+
+        result = search(call_tool, deps, code="IMV-001")
+
+        assert result.guidance == SEARCH_BUDGET_SPENT
+        assert result.properties == []
+        assert orm.searched is False
+
+    def test_nao_incrementa_o_contador_depois_do_limite(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        deps = AssistantDeps(conversation_id=1, searches_done=MAX_SEARCHES_PER_RUN)
+
+        search(call_tool, deps, code="IMV-001")
+
+        assert deps.searches_done == MAX_SEARCHES_PER_RUN
+
+    def test_cada_busca_efetiva_consome_uma_unidade(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        deps = AssistantDeps(conversation_id=1)
+
+        search(call_tool, deps, code="IMV-001")
+        search(call_tool, deps, code="IMV-002")
+
+        assert deps.searches_done == 2
+
+
+class TestFiltrosDaQuery:
+    """O que o cliente informou vira filtro; o que ele não informou, não."""
+
+    def test_monta_a_query_com_todos_os_filtros_informados(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        search(
+            call_tool,
+            transaction_type="venda",
+            neighborhood="Boa Viagem",
+            min_price=100000,
+            max_price=300000,
+            bedrooms=3,
+        )
+
+        assert orm.filters == {
+            "transaction_type": "venda",
+            "neighborhood__iexact": "Boa Viagem",
+            "price__gte": Decimal("100000"),
+            "price__lte": Decimal("300000"),
+            "bedrooms": 3,
+        }
+
+    def test_quartos_e_opcional_e_fica_fora_da_query_quando_ausente(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        search(
+            call_tool,
+            transaction_type="aluguel",
+            neighborhood="Boa Viagem",
+            max_price=3000,
+        )
+
+        assert "bedrooms" not in orm.filters
+
+    def test_a_faixa_informada_pelo_cliente_vira_filtro_da_query(
+        self, call_tool: CallTool, orm: PropertyORM,
+    ) -> None:
+        search(
+            call_tool,
+            transaction_type="aluguel",
+            neighborhood="Boa Viagem",
+            min_price=1500,
+            max_price=3000,
+        )
+
+        assert orm.filters["price__gte"] == 1500
+        assert orm.filters["price__lte"] == 3000
+
+
+class TestOrientacaoDaResposta:
+    """O campo ``guidance`` é o que diz ao modelo o que fazer em seguida."""
+
+    def test_orienta_a_apresentar_quando_encontra(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(property_stub())
+
+        result = search(call_tool, code="IMV-001")
 
         assert result.guidance == FOUND
 
-    def test_returns_nothing_found_guidance_when_no_properties_match(
-        self, mock_property: MagicMock, mock_recommendation: MagicMock,
+    def test_orienta_a_ser_transparente_quando_nao_encontra(
+        self, call_tool: CallTool, orm: PropertyORM,
     ) -> None:
-        deps = AssistantDeps(conversation_id=1)
-        stub_found_properties(mock_property, [])
+        orm.returns()
 
-        result = search_properties(
-            context_with(deps),
-            transaction_type="aluguel",
-            neighborhood="Boa Viagem",
-            min_price=Decimal("1000"),
-        )
+        result = search(call_tool, code="IMV-404")
 
         assert result.guidance == NOTHING_FOUND
         assert result.properties == []
 
+    def test_converte_o_imovel_para_o_formato_da_resposta(
+        self, call_tool: CallTool, orm: PropertyORM, property_stub: MakeProperty,
+    ) -> None:
+        orm.returns(
+            property_stub(
+                code="IMV-001",
+                price="2500.00",
+                neighborhood="Boa Viagem",
+                bedrooms=2,
+                address="Rua dos Navegantes, 150",
+                description="Apartamento com varanda",
+            )
+        )
 
+        imovel = search(call_tool, code="IMV-001").properties[0]
+
+        assert (imovel.code, imovel.price, imovel.bedrooms) == ("IMV-001", 2500, 2)
+        assert imovel.neighborhood == "Boa Viagem"
+        assert imovel.address == "Rua dos Navegantes, 150"
+        assert imovel.description == "Apartamento com varanda"

@@ -56,5 +56,4 @@ class JSONPropertyImporter(PropertyImporter):
             address=str(raw["endereco"]).strip(),
             description=description,
             source=self.source,
-            source_reference=str(self.file_path),
         )
