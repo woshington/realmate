@@ -1,8 +1,9 @@
-"""Ferramental dos testes de carga de imóveis.
+"""Test tooling for the property loading pipeline.
 
-As fontes reais são arquivos; os testes escrevem arquivos temporários com o
-mesmo formato. ``csv_row`` e ``json_record`` produzem um registro válido por
-padrão, e cada teste sobrescreve só o campo que está exercitando.
+The real sources are files; the tests write temporary files in the same format.
+``csv_row`` and ``json_record`` produce a valid record by default, and each test
+overrides only the field it is exercising. Their keyword arguments keep the
+source column names, since those are what the importers read.
 """
 
 import json

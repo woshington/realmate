@@ -1,9 +1,9 @@
-"""Orquestração da carga e o ponto de extensão para novas fontes.
+"""Load orchestration and the extension point for new sources.
 
-O desafio pede que XML e API REST entrem "com mudança mínima". Os testes de
-extensão aqui provam isso de forma executável: uma fonte nova implementa duas
-funções e herda upsert, contagem e tolerância a erro sem tocar em ``base.py``
-nem nos importadores existentes.
+The challenge asks for XML and a REST API to fit in "with minimal change". The
+extension tests here prove that in an executable way: a new source implements
+two functions and inherits upsert, counting and error tolerance without touching
+``base.py`` nor the existing importers.
 """
 
 import json
@@ -24,7 +24,7 @@ from properties.tasks import load_properties
 
 pytestmark = pytest.mark.django_db
 
-TOTAL_NAS_FONTES_REAIS = 20
+TOTAL_IN_THE_REAL_SOURCES = 20
 
 WriteCsv = Callable[..., Path]
 CsvRow = Callable[..., str]
@@ -32,7 +32,7 @@ WriteJson = Callable[..., Path]
 
 
 class FakeAPIImporter(PropertyImporter):
-    """Fonte fictícia: estender é implementar ``extract`` + ``transform``."""
+    """Fictional source: extending means implementing ``extract`` + ``transform``."""
 
     source = PropertySource.API
 
@@ -56,12 +56,12 @@ class FakeAPIImporter(PropertyImporter):
 
 
 class BrokenImporter(PropertyImporter):
-    """Fonte fora do ar: falha logo no ``extract``."""
+    """Source that is down: it fails right at ``extract``."""
 
     source = PropertySource.XML
 
     def extract(self) -> Iterator[Any]:
-        raise OSError("arquivo do parceiro indisponível")
+        raise OSError("partner file unavailable")
 
     def transform(self, raw: Any) -> PropertyData:  # pragma: no cover
         raise NotImplementedError
@@ -75,17 +75,17 @@ def api_record(code: str = "API-1", **overrides: Any) -> dict[str, Any]:
     return record
 
 
-class TestPontoDeExtensao:
-    def test_fonte_nova_herda_o_upsert_sem_reimplementar_nada(self) -> None:
+class TestExtensionPoint:
+    def test_a_new_source_inherits_the_upsert_without_reimplementing_anything(self) -> None:
         result = FakeAPIImporter([api_record()]).load()
 
-        imovel = Property.objects.get()
+        property_ = Property.objects.get()
         assert result.created == 1
-        assert imovel.code == "API-1"
-        assert imovel.source == PropertySource.API
-        assert imovel.imported_at is not None
+        assert property_.code == "API-1"
+        assert property_.source == PropertySource.API
+        assert property_.imported_at is not None
 
-    def test_fonte_nova_herda_a_idempotencia(self) -> None:
+    def test_a_new_source_inherits_idempotence(self) -> None:
         importer = FakeAPIImporter([api_record()])
 
         importer.load()
@@ -94,11 +94,11 @@ class TestPontoDeExtensao:
         assert Property.objects.count() == 1
         assert (result.created, result.updated) == (0, 1)
 
-    def test_fonte_nova_herda_a_tolerancia_a_registro_ruim(self) -> None:
+    def test_a_new_source_inherits_tolerance_to_a_bad_record(self) -> None:
         result = FakeAPIImporter(
             [
                 api_record("API-1"),
-                {"id": "API-2", "bairro": "Pina"},  # faltam campos -> KeyError
+                {"id": "API-2", "bairro": "Pina"},  # missing fields -> KeyError
                 api_record("API-3", bairro="Boa Viagem", valor="500000", dorms=2),
             ]
         ).load()
@@ -108,33 +108,33 @@ class TestPontoDeExtensao:
             "API-1", "API-3",
         }
 
-    def test_load_nao_pode_ser_sobrescrito_por_uma_fonte_nova(self) -> None:
-        """``load`` é ``@final``: idempotência não é negociável por importador."""
+    def test_load_cannot_be_overridden_by_a_new_source(self) -> None:
+        """``load`` is ``@final``: idempotence is not negotiable per importer."""
 
         assert getattr(PropertyImporter.load, "__final__", False) is True
 
 
-class TestConsolidacao:
-    def test_os_importadores_ativos_sao_csv_e_json(self) -> None:
-        fontes = {importer.source for importer in active_importers()}
+class TestConsolidation:
+    def test_the_active_importers_are_csv_and_json(self) -> None:
+        sources = {importer.source for importer in active_importers()}
 
-        assert fontes == {PropertySource.CSV, PropertySource.JSON}
+        assert sources == {PropertySource.CSV, PropertySource.JSON}
 
-    def test_a_carga_completa_mescla_as_duas_fontes(self) -> None:
+    def test_the_full_load_merges_both_sources(self) -> None:
         result = import_all_properties()
 
-        assert result.created == TOTAL_NAS_FONTES_REAIS
-        assert Property.objects.count() == TOTAL_NAS_FONTES_REAIS
+        assert result.created == TOTAL_IN_THE_REAL_SOURCES
+        assert Property.objects.count() == TOTAL_IN_THE_REAL_SOURCES
 
-    def test_a_carga_completa_e_idempotente(self) -> None:
+    def test_the_full_load_is_idempotent(self) -> None:
         import_all_properties()
 
         result = import_all_properties()
 
-        assert (result.created, result.updated) == (0, TOTAL_NAS_FONTES_REAIS)
-        assert Property.objects.count() == TOTAL_NAS_FONTES_REAIS
+        assert (result.created, result.updated) == (0, TOTAL_IN_THE_REAL_SOURCES)
+        assert Property.objects.count() == TOTAL_IN_THE_REAL_SOURCES
 
-    def test_soma_os_numeros_de_todas_as_fontes(
+    def test_sums_the_numbers_of_every_source(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
@@ -149,10 +149,10 @@ class TestConsolidacao:
         assert result.total_processed == 2
 
 
-class TestFonteQueFalha:
-    """Uma fonte fora do ar não pode derrubar a carga das outras."""
+class TestFailingSource:
+    """A source that is down must not bring down the load of the others."""
 
-    def test_a_falha_de_uma_fonte_nao_impede_as_demais(
+    def test_the_failure_of_one_source_does_not_block_the_others(
         self, monkeypatch: pytest.MonkeyPatch,
         write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
@@ -167,7 +167,7 @@ class TestFonteQueFalha:
         assert result.created == 1
         assert Property.objects.get().code == "OK-1"
 
-    def test_a_falha_da_fonte_aparece_no_resultado(
+    def test_the_source_failure_shows_up_in_the_result(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
@@ -176,14 +176,14 @@ class TestFonteQueFalha:
 
         result = import_all_properties()
 
-        assert any("indisponível" in error for error in result.errors)
+        assert any("unavailable" in error for error in result.errors)
 
-    def test_arquivo_inexistente_e_tratado_como_falha_de_fonte(
+    def test_a_missing_file_is_treated_as_a_source_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         monkeypatch.setattr(
             "properties.services.active_importers",
-            lambda: [CSVPropertyImporter(tmp_path / "nao-existe.csv")],
+            lambda: [CSVPropertyImporter(tmp_path / "does-not-exist.csv")],
         )
 
         result = import_all_properties()
@@ -191,7 +191,7 @@ class TestFonteQueFalha:
         assert result.total_processed == 0
         assert len(result.errors) == 1
 
-    def test_erros_de_registro_aparecem_no_resultado_consolidado(
+    def test_record_errors_show_up_in_the_consolidated_result(
         self, monkeypatch: pytest.MonkeyPatch, write_json: WriteJson,
     ) -> None:
         json_path = write_json(
@@ -208,38 +208,39 @@ class TestFonteQueFalha:
         assert len(result.errors) == 1
 
 
-class TestTaskDeCarga:
-    def test_devolve_o_resumo_serializavel_da_carga(self) -> None:
-        resumo = load_properties()
+class TestLoadTask:
+    def test_returns_the_serializable_summary_of_the_load(self) -> None:
+        summary = load_properties()
 
-        assert resumo == {
-            "created": TOTAL_NAS_FONTES_REAIS, "updated": 0, "skipped": 0, "errors": 0,
+        assert summary == {
+            "created": TOTAL_IN_THE_REAL_SOURCES, "updated": 0, "skipped": 0,
+            "errors": 0,
         }
-        assert json.dumps(resumo)  # precisa atravessar o result backend do Celery
+        assert json.dumps(summary)  # has to cross Celery's result backend
 
-    def test_roda_a_mesma_carga_da_orquestracao(self) -> None:
+    def test_runs_the_same_load_as_the_orchestration(self) -> None:
         load_properties()
 
-        assert Property.objects.count() == TOTAL_NAS_FONTES_REAIS
+        assert Property.objects.count() == TOTAL_IN_THE_REAL_SOURCES
 
-    def test_a_execucao_diaria_e_idempotente(self) -> None:
+    def test_the_daily_run_is_idempotent(self) -> None:
         load_properties()
 
-        resumo = load_properties()
+        summary = load_properties()
 
-        assert resumo["created"] == 0
-        assert resumo["updated"] == TOTAL_NAS_FONTES_REAIS
-        assert Property.objects.count() == TOTAL_NAS_FONTES_REAIS
+        assert summary["created"] == 0
+        assert summary["updated"] == TOTAL_IN_THE_REAL_SOURCES
+        assert Property.objects.count() == TOTAL_IN_THE_REAL_SOURCES
 
-    def test_conta_os_erros_em_vez_de_propaga_los(
+    def test_counts_the_errors_instead_of_propagating_them(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A task não pode estourar: o Beat reagendaria a carga inteira."""
+        """The task must not blow up: Beat would reschedule the whole load."""
 
         monkeypatch.setattr(
             "properties.services.active_importers", lambda: [BrokenImporter()],
         )
 
-        resumo = load_properties()
+        summary = load_properties()
 
-        assert resumo == {"created": 0, "updated": 0, "skipped": 0, "errors": 1}
+        assert summary == {"created": 0, "updated": 0, "skipped": 0, "errors": 1}

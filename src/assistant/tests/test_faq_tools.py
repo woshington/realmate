@@ -1,9 +1,9 @@
-"""Tool de perguntas frequentes.
+"""Frequently asked questions tool.
 
-A base de FAQ é a única fonte de verdade sobre a imobiliária. A tool devolve a
-base inteira e o prompt proíbe complementar — por isso o que importa testar é
-que ela lê o arquivo configurado, respeita o alias em português e não relê o
-arquivo a cada pergunta.
+The FAQ file is the single source of truth about the agency. The tool returns
+the whole knowledge base and the prompt forbids adding to it — so what matters
+to test is that it reads the configured file, honors the Portuguese aliases and
+does not re-read the file on every question.
 """
 
 from pathlib import Path
@@ -20,8 +20,8 @@ def ask_faq(call_tool: CallTool) -> Any:
     return call_tool(faq_properties)
 
 
-class TestLeituraDaBase:
-    def test_devolve_as_entradas_do_arquivo_configurado(
+class TestReadingTheKnowledgeBase:
+    def test_returns_the_entries_of_the_configured_file(
         self, call_tool: CallTool, faq_file: WriteFaq,
     ) -> None:
         faq_file(
@@ -29,47 +29,47 @@ class TestLeituraDaBase:
             {"pergunta": "Qual o horário?", "resposta": "Das 9h às 18h."},
         )
 
-        entradas = ask_faq(call_tool)
+        entries = ask_faq(call_tool)
 
-        assert [entrada.ask for entrada in entradas] == [
+        assert [entry.ask for entry in entries] == [
             "Quais documentos preciso?",
             "Qual o horário?",
         ]
-        assert [entrada.answer for entrada in entradas] == ["RG e CPF.", "Das 9h às 18h."]
+        assert [entry.answer for entry in entries] == ["RG e CPF.", "Das 9h às 18h."]
 
-    def test_traduz_o_alias_em_portugues_do_arquivo(
+    def test_translates_the_portuguese_alias_from_the_file(
         self, call_tool: CallTool, faq_file: WriteFaq,
     ) -> None:
-        """No disco é ``pergunta``/``resposta``; no domínio, ``ask``/``answer``."""
+        """On disk it is ``pergunta``/``resposta``; in the domain, ``ask``/``answer``."""
 
         faq_file({"pergunta": "Tem taxa?", "resposta": "Não cobramos taxa."})
 
-        entrada = ask_faq(call_tool)[0]
+        entry = ask_faq(call_tool)[0]
 
-        assert entrada.ask == "Tem taxa?"
-        assert entrada.answer == "Não cobramos taxa."
+        assert entry.ask == "Tem taxa?"
+        assert entry.answer == "Não cobramos taxa."
 
-    def test_base_vazia_devolve_lista_vazia(
+    def test_an_empty_knowledge_base_returns_an_empty_list(
         self, call_tool: CallTool, faq_file: WriteFaq,
     ) -> None:
         faq_file()
 
         assert ask_faq(call_tool) == []
 
-    def test_a_base_real_do_projeto_carrega(self, call_tool: CallTool) -> None:
-        """Fumaça sobre o arquivo versionado em ``data/``."""
+    def test_the_real_project_knowledge_base_loads(self, call_tool: CallTool) -> None:
+        """Smoke test over the file versioned in ``data/``."""
 
-        entradas = ask_faq(call_tool)
+        entries = ask_faq(call_tool)
 
-        assert entradas
-        assert all(entrada.ask and entrada.answer for entrada in entradas)
+        assert entries
+        assert all(entry.ask and entry.answer for entry in entries)
 
 
-class TestCacheDaBase:
-    def test_le_o_arquivo_uma_unica_vez(
+class TestKnowledgeBaseCache:
+    def test_reads_the_file_only_once(
         self, call_tool: CallTool, faq_file: WriteFaq,
     ) -> None:
-        """Uma pergunta de cliente não pode custar uma leitura de disco."""
+        """A customer question must not cost a disk read."""
 
         faq_file({"pergunta": "P", "resposta": "R"})
 
@@ -80,19 +80,19 @@ class TestCacheDaBase:
         assert spy_open.call_count == 1
 
 
-class TestArquivoInvalido:
-    def test_arquivo_ausente_vira_erro_para_o_modelo_em_vez_de_derrubar_o_run(
+class TestInvalidFile:
+    def test_a_missing_file_becomes_an_error_for_the_model_instead_of_killing_the_run(
         self, call_tool: CallTool, settings: Any, tmp_path: Path,
     ) -> None:
-        """``@function_tool`` captura a exceção e devolve o erro como texto.
+        """``@function_tool`` catches the exception and returns the error as text.
 
-        Vale testar porque é o que separa "a IA responde que não conseguiu
-        consultar" de "a conversa inteira cai no fallback".
+        Worth testing because it is what separates "the AI answers that it could
+        not look it up" from "the whole conversation falls back".
         """
 
-        settings.FAQ_JSON_PATH = str(tmp_path / "nao-existe.json")
+        settings.FAQ_JSON_PATH = str(tmp_path / "does-not-exist.json")
 
-        resultado = ask_faq(call_tool)
+        result = ask_faq(call_tool)
 
-        assert isinstance(resultado, str)
-        assert "error" in resultado.lower()
+        assert isinstance(result, str)
+        assert "error" in result.lower()

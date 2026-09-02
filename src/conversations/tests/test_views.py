@@ -1,7 +1,7 @@
 """``GET /api/conversations/{user_phone}/messages``.
 
-Contrato de leitura do histórico: é por aqui que o avaliador do desafio confere
-o que o assistente respondeu e quais imóveis foram apresentados.
+The read contract for the history: this is where the challenge reviewer checks
+what the assistant answered and which properties were presented.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -48,8 +48,8 @@ def conversation(
     return conversation
 
 
-class TestFormatoDaResposta:
-    def test_devolve_o_historico_no_formato_do_contrato(
+class TestResponseFormat:
+    def test_returns_the_history_in_the_contract_format(
         self, client: Client, conversation: Conversation,
     ) -> None:
         response = client.get(url_for(PHONE))
@@ -72,7 +72,7 @@ class TestFormatoDaResposta:
             ],
         }
 
-    def test_conversa_sem_mensagens_devolve_listas_vazias(
+    def test_a_conversation_without_messages_returns_empty_lists(
         self, client: Client, make_conversation: MakeConversation,
     ) -> None:
         make_conversation()
@@ -83,7 +83,7 @@ class TestFormatoDaResposta:
             "messages": [],
         }
 
-    def test_timestamp_sai_em_utc_com_sufixo_z(
+    def test_the_timestamp_is_returned_in_utc_with_the_z_suffix(
         self, client: Client, conversation: Conversation, make_message: MakeMessage,
     ) -> None:
         make_message(
@@ -100,8 +100,8 @@ class TestFormatoDaResposta:
         assert "2026-06-02T11:00:00Z" in timestamps
 
 
-class TestOrdenacao:
-    def test_mensagens_saem_da_mais_antiga_para_a_mais_recente(
+class TestOrdering:
+    def test_messages_come_from_the_oldest_to_the_newest(
         self, client: Client, conversation: Conversation, make_message: MakeMessage,
     ) -> None:
         make_message(
@@ -118,7 +118,7 @@ class TestOrdenacao:
         assert timestamps == sorted(timestamps)
         assert timestamps[0] == "2026-06-02T09:59:00Z"
 
-    def test_properties_found_segue_a_ordem_da_recomendacao(
+    def test_properties_found_follows_the_recommendation_order(
         self, client: Client, conversation: Conversation, make_property: MakeProperty,
     ) -> None:
         for code in ("IMV-001", "C011"):
@@ -131,53 +131,53 @@ class TestOrdenacao:
         assert found == ["IMV-001", "C011"]
 
 
-class TestIsolamentoEntreConversas:
-    def test_recomendacao_de_outra_conversa_nao_vaza(
+class TestIsolationBetweenConversations:
+    def test_a_recommendation_from_another_conversation_does_not_leak(
         self, client: Client, conversation: Conversation,
         make_conversation: MakeConversation, make_property: MakeProperty,
     ) -> None:
-        outra = make_conversation(user_phone=OTHER_PHONE)
+        other = make_conversation(user_phone=OTHER_PHONE)
         PropertyRecommendation.objects.create(
-            conversation=outra, property=make_property(code="IMV-999"),
+            conversation=other, property=make_property(code="IMV-999"),
         )
 
         assert client.get(url_for(PHONE)).json()["properties_found"] == []
 
-    def test_mensagem_de_outra_conversa_nao_vaza(
+    def test_a_message_from_another_conversation_does_not_leak(
         self, client: Client, conversation: Conversation,
         make_conversation: MakeConversation, make_message: MakeMessage,
     ) -> None:
-        outra = make_conversation(user_phone=OTHER_PHONE)
-        make_message(outra, NOW, content="segredo alheio")
+        other = make_conversation(user_phone=OTHER_PHONE)
+        make_message(other, NOW, content="segredo alheio")
 
-        conteudos = [
+        contents = [
             message["content"]
             for message in client.get(url_for(PHONE)).json()["messages"]
         ]
 
-        assert "segredo alheio" not in conteudos
+        assert "segredo alheio" not in contents
 
 
-class TestResolucaoDoTelefone:
-    def test_telefone_sem_o_mais_resolve_a_mesma_conversa(
+class TestPhoneResolution:
+    def test_a_phone_without_the_plus_resolves_to_the_same_conversation(
         self, client: Client, conversation: Conversation,
     ) -> None:
-        """Alguns clientes omitem o ``+`` ao montar a URL."""
+        """Some clients drop the ``+`` when building the URL."""
 
         response = client.get(url_for(PHONE.removeprefix("+")))
 
         assert response.status_code == 200
         assert response.json()["user_phone"] == PHONE
 
-    def test_telefone_desconhecido_devolve_404(self, client: Client) -> None:
+    def test_an_unknown_phone_returns_404(self, client: Client) -> None:
         assert client.get(url_for("+5581900000000")).status_code == 404
 
-    def test_telefone_em_formato_invalido_nao_casa_a_rota(self, client: Client) -> None:
+    def test_a_malformed_phone_does_not_match_the_route(self, client: Client) -> None:
         assert client.get("/api/conversations/abc/messages").status_code == 404
 
 
-class TestMetodosPermitidos:
-    def test_a_rota_e_somente_leitura(
+class TestAllowedMethods:
+    def test_the_route_is_read_only(
         self, client: Client, conversation: Conversation,
     ) -> None:
         assert client.post(url_for(PHONE)).status_code == 405

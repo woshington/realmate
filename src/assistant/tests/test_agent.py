@@ -1,9 +1,9 @@
-"""Comportamento do agente ponta a ponta, com modelo roteirizado.
+"""End-to-end agent behavior, driven by a scripted model.
 
-Aqui o agente é o de produção — mesmas tools, mesmo prompt, mesmo
-``output_type``. Só o modelo é trocado por um roteiro determinístico, o que
-permite afirmar duas coisas que o teste de tool sozinho não alcança: qual tool
-o agente expôs/executou, e o que voltou para o modelo depois da execução.
+The agent here is the production one — same tools, same prompt, same
+``output_type``. Only the model is replaced by a deterministic script, which
+allows asserting two things a tool test alone cannot reach: which tool the agent
+exposed/executed, and what came back to the model after the execution.
 """
 
 import json
@@ -23,8 +23,8 @@ RunAgent = Callable[..., AgentRun]
 MakeProperty = Callable[..., Any]
 
 
-class TestConfiguracaoDoAgente:
-    def test_expoe_exatamente_as_duas_tools_do_dominio(
+class TestAgentConfiguration:
+    def test_exposes_exactly_the_two_domain_tools(
         self, run_agent: RunAgent,
     ) -> None:
         run = run_agent(answers("Olá!"))
@@ -34,12 +34,12 @@ class TestConfiguracaoDoAgente:
             "faq_properties",
         ]
 
-    def test_usa_o_prompt_do_dominio_como_instrucao(self, run_agent: RunAgent) -> None:
+    def test_uses_the_domain_prompt_as_instructions(self, run_agent: RunAgent) -> None:
         run = run_agent(answers("Olá!"))
 
         assert run.first_call.system_instructions == SYSTEM_PROMPT
 
-    def test_exige_a_resposta_no_formato_agent_reply(
+    def test_requires_the_answer_in_the_agent_reply_format(
         self, run_agent: RunAgent,
     ) -> None:
         run = run_agent(answers("Olá!"))
@@ -47,8 +47,8 @@ class TestConfiguracaoDoAgente:
         assert run.first_call.output_schema is not None
         assert isinstance(run.reply, AgentReply)
 
-    def test_get_agent_devolve_uma_instancia_nova_a_cada_chamada(self) -> None:
-        """Cada conversa roda com o seu próprio agente: nada de estado compartilhado."""
+    def test_get_agent_returns_a_fresh_instance_on_every_call(self) -> None:
+        """Every conversation runs with its own agent: no shared state."""
 
         model = ScriptedModel()
 
@@ -62,10 +62,10 @@ class TestConfiguracaoDoAgente:
         assert first is not second
 
 
-class TestRoteamentoDeTools:
-    """A pergunta do cliente tem que cair na tool certa."""
+class TestToolRouting:
+    """The customer's question has to land on the right tool."""
 
-    def test_pedido_de_imovel_vai_para_a_busca(
+    def test_property_request_goes_to_the_search_tool(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(property_stub(code="IMV-001"))
@@ -82,7 +82,7 @@ class TestRoteamentoDeTools:
 
         assert run.tools_called == ["search_properties"]
 
-    def test_duvida_sobre_a_imobiliaria_vai_para_o_faq(
+    def test_question_about_the_agency_goes_to_the_faq(
         self, run_agent: RunAgent, faq_file: Callable[..., Any],
     ) -> None:
         faq_file({"pergunta": "Quais documentos?", "resposta": "RG e CPF."})
@@ -95,7 +95,7 @@ class TestRoteamentoDeTools:
 
         assert run.tools_called == ["faq_properties"]
 
-    def test_faq_devolve_a_base_para_o_modelo(
+    def test_faq_returns_the_knowledge_base_to_the_model(
         self, run_agent: RunAgent, faq_file: Callable[..., Any],
     ) -> None:
         faq_file({"pergunta": "Quais documentos?", "resposta": "RG e CPF."})
@@ -106,10 +106,10 @@ class TestRoteamentoDeTools:
             message="Que documento preciso?",
         )
 
-        entradas = run.tool_outputs[0]
-        assert [entrada.answer for entrada in entradas] == ["RG e CPF."]
+        entries = run.tool_outputs[0]
+        assert [entry.answer for entry in entries] == ["RG e CPF."]
 
-    def test_conversa_sem_pedido_nao_chama_tool_nenhuma(
+    def test_small_talk_calls_no_tool_at_all(
         self, run_agent: RunAgent, orm: PropertyORM,
     ) -> None:
         run = run_agent(answers("Olá! Como posso ajudar?"), message="bom dia")
@@ -118,10 +118,10 @@ class TestRoteamentoDeTools:
         assert orm.searched is False
 
 
-class TestPedidoDeInformacaoFaltante:
-    """Sem filtro obrigatório, o agente pergunta em vez de buscar."""
+class TestAskingForMissingInformation:
+    """Without a required filter, the agent asks instead of searching."""
 
-    def test_a_tool_devolve_ao_modelo_a_orientacao_de_perguntar(
+    def test_the_tool_returns_the_guidance_to_ask(
         self, run_agent: RunAgent, orm: PropertyORM,
     ) -> None:
         run = run_agent(
@@ -130,12 +130,12 @@ class TestPedidoDeInformacaoFaltante:
             message="Quero alugar um apartamento",
         )
 
-        orientacao = run.tool_outputs[0].guidance
-        assert "bairro" in orientacao
-        assert "preço" in orientacao
-        assert "Pergunte ao cliente" in orientacao
+        guidance = run.tool_outputs[0].guidance
+        assert "bairro" in guidance
+        assert "preço" in guidance
+        assert "Pergunte ao cliente" in guidance
 
-    def test_nenhum_imovel_e_recomendado_quando_falta_filtro(
+    def test_no_property_is_recommended_when_a_filter_is_missing(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(property_stub(code="IMV-001"))
@@ -151,10 +151,10 @@ class TestPedidoDeInformacaoFaltante:
         assert run.reply.recommended_properties == []
         assert deps.presented_codes == []
 
-    def test_a_orientacao_chega_ao_modelo_na_rodada_seguinte(
+    def test_the_guidance_reaches_the_model_on_the_next_turn(
         self, run_agent: RunAgent, orm: PropertyORM,
     ) -> None:
-        """A pergunta ao cliente nasce do retorno da tool, não de adivinhação."""
+        """The question to the customer comes from the tool output, not guesswork."""
 
         run = run_agent(
             calls_search(neighborhood="Boa Viagem"),
@@ -162,12 +162,12 @@ class TestPedidoDeInformacaoFaltante:
             message="Quero algo em Boa Viagem",
         )
 
-        segunda_rodada = json.dumps(run.model.calls[1].input, ensure_ascii=False)
-        assert "tipo de transação" in segunda_rodada
+        second_turn = json.dumps(run.model.calls[1].input, ensure_ascii=False)
+        assert "tipo de transação" in second_turn
 
 
-class TestNaoRepeteImovelNaConversa:
-    def test_os_imoveis_ja_recomendados_saem_da_query(
+class TestNoPropertyRepeatsInTheConversation:
+    def test_already_recommended_properties_are_left_out_of_the_query(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.already_recommended(1, 2)
@@ -185,7 +185,7 @@ class TestNaoRepeteImovelNaConversa:
 
         assert orm.excluded_ids == [1, 2]
 
-    def test_nova_busca_na_mesma_conversa_nao_repete_o_ja_apresentado(
+    def test_a_new_search_in_the_same_conversation_does_not_repeat_what_was_shown(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.already_recommended(1)
@@ -203,13 +203,13 @@ class TestNaoRepeteImovelNaConversa:
             deps=deps,
         )
 
-        apresentados = [imovel.code for imovel in run.tool_outputs[0].properties]
-        assert "IMV-001" not in apresentados
-        assert apresentados == ["IMV-002"]
+        presented = [property_.code for property_ in run.tool_outputs[0].properties]
+        assert "IMV-001" not in presented
+        assert presented == ["IMV-002"]
 
 
-class TestLimiteDeImoveisPorResposta:
-    def test_o_modelo_recebe_no_maximo_dois_imoveis(
+class TestPropertyLimitPerAnswer:
+    def test_the_model_receives_at_most_two_properties(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(6)])
@@ -226,7 +226,7 @@ class TestLimiteDeImoveisPorResposta:
 
         assert len(run.tool_outputs[0].properties) == 2
 
-    def test_a_conversa_registra_no_maximo_dois_codigos_por_busca(
+    def test_the_conversation_records_at_most_two_codes_per_search(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(*[property_stub(code=f"IMV-{index}") for index in range(6)])
@@ -246,8 +246,8 @@ class TestLimiteDeImoveisPorResposta:
         assert deps.presented_codes == ["IMV-0", "IMV-1"]
 
 
-class TestRespostaFinal:
-    def test_a_resposta_vira_agent_reply_com_os_imoveis_recomendados(
+class TestFinalAnswer:
+    def test_the_answer_becomes_an_agent_reply_with_the_recommended_properties(
         self, run_agent: RunAgent, orm: PropertyORM, property_stub: MakeProperty,
     ) -> None:
         orm.returns(property_stub(code="IMV-001"))
@@ -275,9 +275,11 @@ class TestRespostaFinal:
         )
 
         assert run.reply.message == "Encontrei o IMV-001."
-        assert [imovel.code for imovel in run.reply.recommended_properties] == ["IMV-001"]
+        assert [
+            property_.code for property_ in run.reply.recommended_properties
+        ] == ["IMV-001"]
 
-    def test_resposta_sem_imovel_traz_a_lista_vazia(
+    def test_an_answer_without_properties_carries_an_empty_list(
         self, run_agent: RunAgent, orm: PropertyORM,
     ) -> None:
         run = run_agent(answers("Olá! Como posso ajudar?"))

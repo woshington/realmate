@@ -35,6 +35,10 @@ class Conversation(TimestampedModel):
         related_name="conversations",
         blank=True,
     )
+    external_conversation_id = models.CharField(
+        verbose_name="ID Externo da Conversa (Provider)",
+        null=True
+    )
 
     class Meta:
         verbose_name = "conversa"

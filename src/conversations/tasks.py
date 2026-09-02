@@ -1,20 +1,21 @@
 import logging
 import uuid
+from datetime import timedelta
 
 from agents import Runner
 from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
-from openai.types.responses import EasyInputMessageParam
-
 from assistant import FALLBACK_MESSAGE, agent
 from assistant.schemas import AgentReply
 from assistant.tools import AssistantDeps
 from assistant.helpers import to_model_messages
 from conversations.enums import MessageRole
-from conversations.models import Message
+from conversations.models import Message, Conversation
 from conversations.services import (
     add_recommendations,
+    close_inactive_conversations,
+    ensure_external_conversation,
     get_recent_messages,
     has_newer_customer_message,
     register_message,
@@ -73,29 +74,22 @@ def process_conversation(
 
         trigger = Message.objects.get(pk=trigger_message_id)
 
-        history = get_recent_messages(
-            conversation_id=conversation_id,
-            limit=settings.AGENT_HISTORY_MESSAGE_LIMIT,
-            before_message_id=trigger_message_id,
-        )
-
-        deps = AssistantDeps(
-            conversation_id=conversation_id,
-        )
+        deps = AssistantDeps(conversation_id=conversation_id)
 
         user_agent = agent.get_agent()
+
+        conversation = Conversation.objects.get(pk=conversation_id)
+
+        history = get_recent_messages(conversation_id=conversation_id)
 
         try:
             result = Runner.run_sync(
                 starting_agent=user_agent,
                 input=[
                     *to_model_messages(history),
-                    EasyInputMessageParam(
-                        role="user",
-                        content=trigger.content,
-                    ),
                 ],
                 context=deps,
+                conversation_id=ensure_external_conversation(conversation),
             )
         except Exception:
             logger.exception(
@@ -141,3 +135,23 @@ def process_conversation(
 
     finally:
         cache.delete(lock_id)
+
+
+@shared_task(name="conversations.expire_inactive_conversations")
+def expire_inactive_conversations() -> int:
+    """Varredura periódica que encerra os atendimentos abandonados.
+
+    O cliente que some não deixa a conversa aberta para sempre; e a próxima
+    mensagem dele reabre a conversa numa thread nova do provider, começando um
+    atendimento limpo. O retorno é um `int` porque precisa ser serializável em
+    JSON para o result backend do Celery.
+    """
+
+    closed = close_inactive_conversations(
+        idle_for=timedelta(hours=settings.INACTIVITY_TIMEOUT_HOURS),
+    )
+
+    if closed:
+        logger.info("%s conversa(s) encerrada(s) por inatividade.", closed)
+
+    return closed

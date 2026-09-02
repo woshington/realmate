@@ -86,10 +86,12 @@ CELERY_TIMEZONE = "UTC"
 
 CELERY_BEAT_SCHEDULE = {
     "carregar-imoveis-diariamente": {
-        # Precisa bater com o `name` do @shared_task, não com o caminho do
-        # módulo: o worker registra a task pelo nome declarado.
         "task": "properties.load_properties",
-        "schedule": crontab(minute="0", hour=0),
+        "schedule": crontab(minute="0", hour="0"),
+    },
+    "encerrar-conversas-inativas": {
+        "task": "conversations.expire_inactive_conversations",
+        "schedule": crontab(minute="/15"),
     },
 }
 
@@ -139,7 +141,7 @@ LOGGING = {
 
 DEBOUNCE_WINDOW_SECONDS = 10
 
-AGENT_HISTORY_MESSAGE_LIMIT = 30
+INACTIVITY_TIMEOUT_HOURS = 1
 
 DATA_DIR = BASE_DIR / "data"
 PROPERTIES_CSV_PATH = DATA_DIR / "imoveis.csv"

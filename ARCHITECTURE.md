@@ -1,286 +1,277 @@
 # ARCHITECTURE.md
 
-Documento de decisões técnicas do backend do assistente de IA da Realmate.
-O foco é **por que** o sistema está organizado assim — o que o código faz, o
-código já conta.
+Decisões técnicas do backend do assistente de IA da Realmate. Formato: decisão,
+motivo e, quando houve, a alternativa descartada.
 
 ---
 
-## 1. Fluxo de execução
+## 1. Arquitetura empregada
 
-### Fluxo de processamento das mensagens
+Monolito modular em Django: apps por domínio, camadas explícitas dentro de cada
+app. Sem hexagonal, DDD literal ou microserviços — o domínio é pequeno, e a
+evolução prevista (novas fontes de imóveis, novas tools) já cabe nos pontos de
+extensão existentes.
+
+| Componente  | Escolha                | Motivo                                                              |
+| ----------- | ---------------------- | ------------------------------------------------------------------- |
+| API         | Django + DRF           | ORM, migrations e constraints prontos; o desafio é de domínio        |
+| Assíncrono  | Celery + Redis         | a resposta da IA leva segundos e pode falhar — não cabe no request   |
+| Banco       | PostgreSQL             | as constraints são a base da idempotência, não um detalhe            |
+| Cache/lock  | Redis                  | `cache.add` é atômico: lock sem infra nova                           |
+| IA          | OpenAI Agents SDK      | tools tipadas pela assinatura e saída validada por Pydantic          |
+
+Redis acumula três papéis — broker, result backend e cache/lock. Um serviço a
+menos para operar.
+
+---
+
+## 2. Organização do código
+
+### 2.1 Apps
+
+| App             | Responsabilidade                                          | Não faz                          |
+| --------------- | --------------------------------------------------------- | -------------------------------- |
+| `webhooks`      | transporte: valida o payload, delega, responde rápido     | regra de negócio, IA             |
+| `conversations` | domínio da conversa: modelos, serviços, task orquestradora | parsing do contrato do provedor  |
+| `assistant`     | camada de IA: agente, prompt, tools, tradução do histórico | decidir fluxo, gravar conversa   |
+| `properties`    | imóveis e ETL de carga                                     | conhecer conversa                |
+| `common`        | transversal real (`TimestampedModel`, validators)          | qualquer regra de domínio        |
+
+`webhooks` é separado de `conversations` porque muda por outro motivo: o
+contrato do provedor de mensageria de um lado, o domínio da conversa do outro.
+
+### 2.2 Camadas
+
+| Camada     | Arquivo          | Papel                                                             |
+| ---------- | ---------------- | ----------------------------------------------------------------- |
+| View       | `views.py`       | valida entrada, delega, responde — sem `if` de negócio            |
+| Task       | `tasks.py`       | orquestra (lock, supersessão, agente, persistência) — não decide  |
+| Service    | `services.py`    | onde a regra de negócio vive                                      |
+| Model      | `models.py`      | forma dos dados e constraints                                     |
+| Serializer | `serializers.py` | contrato HTTP de entrada e saída                                  |
+
+Direção das dependências: `view → service`, `task → service`, `service → model`.
+Nenhum service importa view ou task, e `assistant` não conhece view nem webhook.
+
+O critério prático: **regra que precisa valer em mais de um caminho de entrada
+só pode morar no service.** Encerramento e reabertura de conversa chegam pelo
+beat e pelo webhook — por isso são `close_inactive_conversations` e
+`reopen_if_closed` em `conversations/services.py`, e a task só decide quando
+chamar.
+
+Testes ficam em `tests/` por app; as fixtures compartilhadas, em `src/conftest.py`.
+
+### 2.3 Modelagem
+
+- **`Property`, uma tabela para todas as fontes.** `code` é `unique` — chave de
+  negócio (o cliente cita no WhatsApp, o ETL usa no upsert) —, mas a PK continua
+  `BigAutoField`: chave de negócio como PK amarra o banco a um identificador de
+  terceiros. `transaction_type` usa o vocabulário do cliente (`"aluguel"` /
+  `"venda"`): mesmo termo no chat, na tool e no filtro do ORM.
+- **`PropertyRecommendation` é `through` explícita**, não M2M simples: o
+  `UniqueConstraint(conversation, property)` transforma "nunca recomendar o
+  mesmo imóvel duas vezes" em garantia do banco, e o `created_at` dá a ordem de
+  `properties_found`.
+- **`Message.timestamp` × `created_at`.** `timestamp` é o horário da origem e
+  ordena o histórico exposto pela API; `created_at` é o do `INSERT` e é o que
+  mede inatividade. 
+- **`last_message_at`**: mensagem atrasada
+  não rebobina a conversa.
+
+---
+
+## 3. Fluxo de execução
 
 ```mermaid
 flowchart TD
-    A[POST /webhook/message] --> B[Webhook]
+    A[POST /webhook/message] --> B[Valida envelope + conteúdo]
     B --> C[register_message]
-    C --> D[Celery]
+    C -->|created=False| C2[200 ignored — não enfileira]
+    C -->|created=True| D[apply_async countdown=10s]
     D --> E[process_conversation]
-    
-    E --> F1[Redis lock]
-    E --> F2[Debounce / supersessão]
-    E --> F3[Monta histórico]
-    
-    F1 & F2 & F3 --> G[Runner.run_sync]
-    G --> H[AI Agent]
-    
+
+    E --> F1{Há mensagem mais recente?}
+    F1 -->|sim| F1X[no-op — a mais nova processa]
+    F1 -->|não| F2{Lock livre? cache.add}
+    F2 -->|ocupado| F2X[no-op — reentrega desiste]
+    F2 -->|obtido| F3[get_recent_messages]
+    F3 --> F4[ensure_external_conversation]
+    F4 --> G[Runner.run_sync]
+    G --> H[Agente]
     H --> I1[search_properties]
     H --> I2[faq_properties]
-    
-    I1 & I2 --> J[Persistência]
-    
-    J --> K1[Salva resposta]
-    J --> K2[Registra recomendações]
-    
-    K1 & K2 --> L[GET /api/conversations/user_phone/messages]
+    I1 --> J{AgentReply validado?}
+    I2 --> J
+    J -->|ok| K1[Salva resposta]
+    J -->|ok| K2[Adiciona recomendações]
+    J -->|falha| K3[FALLBACK_MESSAGE]
+    K1 --> M[Libera lock — finally]
+    K2 --> M
+    K3 --> M
 ```
 
-Em paralelo, o **Celery Beat** roda `properties.load_properties` diariamente às
-00:00 UTC, executando o ETL de imóveis (CSV + JSON).
+1. **Webhook** valida, persiste e responde `200`. Reentrega devolve `"ignored"`
+   e não enfileira nada.
+2. **Debounce** de 10s antes de processar.
+3. Passado o debounce, a task confere se há **mensagem mais recente** na
+   conversa — havendo, descarta (é a task da mensagem mais nova quem processa).
+4. Sem mensagem mais nova, tenta o **lock**: ocupado, a reentrega desiste;
+   obtido, monta o pendente (`get_recent_messages`) e garante a conversa no
+   provider (`ensure_external_conversation`).
+5. **Agente** escolhe as tools; a saída volta validada como `AgentReply`.
+6. Sucesso: persistência da resposta e das recomendações. **Falha em qualquer
+   ponto do run vira `FALLBACK_MESSAGE`** — a task não propaga o erro, porque
+   propagar faria o Celery reenfileirar e cobrar a IA de novo.
+7. **Lock liberado no `finally`**, sucesso ou falha.
 
-O webhook faz apenas trabalho síncrono barato (validar, `INSERT` e enfileirar)
-e responde `200` imediatamente. A chamada ao LLM leva segundos e pode falhar —
-fazê-la na thread do request transformaria latência do modelo em reentrega
-pelo provedor, o que geraria processamento duplicado.
-### Apps
+O cliente consulta a resposta via `GET /api/conversations/{user_phone}/messages`
+de forma assíncrona, fora dessa cadeia — não há passo do processamento que
+dependa dessa chamada nem a dispare.
 
-| App             | Responsabilidade                                              |
-| --------------- | ------------------------------------------------------------- |
-| `webhooks`      | Transporte: validação do payload e resposta rápida            |
-| `conversations` | Domínio da conversa: modelos, serviços, task de orquestração  |
-| `assistant`     | Camada de IA: agente, prompt, tools, tradução de histórico    |
-| `properties`    | Imóveis e o ETL de carga                                      |
-| `common`        | O que é genuinamente transversal (`TimestampedModel`, validators) |
+Nada que dependa de rede externa acontece no request. A chamada ao LLM leva
+segundos e pode falhar; fazê-la na thread do request transformaria latência em
+reentrega do provedor, logo em processamento duplicado. Abrir a conversa no
+provider também é rede, e por isso mora na task.
 
-`webhooks` é separado de `conversations` porque são eixos de mudança
-diferentes: o contrato do provedor de mensageria muda por um motivo, o domínio
-da conversa por outro.
+**Histórico no provider, pendências no banco.** `external_conversation_id`
+aponta para a conversa na Conversations API, e cada run é anexado a ela, então o
+modelo enxerga o que já foi dito sem reenvio. `get_recent_messages` manda apenas
+o que o assistente ainda não respondeu — o custo por mensagem não cresce com o
+tamanho da conversa. O banco continua sendo a fonte de verdade: o provider é
+cache de contexto, não sistema de registro.
 
----
+**Celery Beat**
 
-## 2. Decisões técnicas
-
-**Celery + Redis para o processamento.** A resposta da IA é assíncrona por
-requisito e por necessidade. Redis acumula três papéis: broker, result backend
-e cache (usado como lock).
-
-**Uma tabela para todos os imóveis.** CSV e JSON são mesclados em `Property`.
-`code` é `unique` — é a chave de negócio (o cliente cita no WhatsApp, o ETL usa
-como chave de upsert), mas a PK continua sendo o `BigAutoField`: chave de
-negócio como PK amarraria o banco a um identificador controlado por terceiros.
-`transaction_type` usa os termos do cliente (`"aluguel"` / `"venda"`), mesmo
-vocabulário no cliente, na tool e no filtro do ORM.
-
-**`PropertyRecommendation` é uma tabela `through` explícita**, não um M2M
-simples: o `UniqueConstraint(conversation, property)` transforma "nunca
-recomendar o mesmo imóvel duas vezes" numa garantia do banco; o `created_at` dá
-a ordem de `properties_found` — recomendação feita é registro histórico.
-
-**`timestamp` separado de `created_at`.** `timestamp` é o momento informado pela
-origem (ordena o histórico); `created_at` é o do `INSERT`.
-
-**`last_message_at`**, com `touch_last_message_at` que só avança,
-nunca retrocede — mensagem atrasada não "rebobina" a conversa.
-
-**Agents SDK da OpenAI (`agents`), não framework de orquestração.** O agente é
-montado por request em `get_agent()`: mantém `settings` mutável nos testes e
-evita estado compartilhado no worker. `output_type=AgentReply` (modelo Pydantic)
-faz a saída do LLM ser validada antes de virar registro no banco, e o schema das
-tools é derivado da assinatura das funções — não há dict de schema escrito à mão
-para divergir.
-
-**Histórico traduzido, não persistido no formato do SDK.**
-`assistant/helpers.to_model_messages` converte `Message` do banco para o formato
-do SDK. O banco guarda o domínio (papel, conteúdo, timestamp); trocar de SDK não
-deve exigir migração de dados. O histórico é limitado às
-`AGENT_HISTORY_MESSAGE_LIMIT` (30) mensagens mais recentes — teto de custo e de
-contexto, buscadas com `ORDER BY timestamp DESC LIMIT 30` + `reversed()`.
-
-**Falha do agente vira `FALLBACK_MESSAGE`.** O cliente sempre recebe alguma
-resposta — ele não sabe que precisa reenviar. O fallback ainda pede os filtros
-obrigatórios de volta, então é útil, não só uma desculpa.
-
-**API de saída sem regra de negócio.** `RetrieveAPIView` resolve o histórico
-inteiro em poucas queries (`prefetch_related` + `select_related("property")`),
-com ordenação explícita no `Prefetch` — o formato é contrato testado, não pode
-depender do `Meta.ordering`.
+| Job                                          | Frequência       | O que faz                                       |
+| --------------------------------------------- | ---------------- | ----------------------------------------------- |
+| `properties.load_properties`                  | diário, 00:00 UTC | ETL de imóveis (CSV + JSON)                     |
+| `conversations.expire_inactive_conversations` | a cada 15 minutos | encerra atendimentos parados               |
 
 ---
 
-## 3. Regras de decisão do assistente
+## 4. Início e fim de conversa
 
-O princípio: **regra de negócio verificável vive no código, não no prompt.**
-Prompt influencia; código garante.
-
-**Filtros obrigatórios (`search_properties`).** Sem `code`, são obrigatórios
-tipo de transação, bairro e ao menos um filtro de preço. Faltando qualquer um, a
-tool **não devolve imóvel nenhum** — devolve um `guidance` dizendo o que falta e
-que é preciso perguntar ao cliente. Nem reformulação de prompt nem alucinação
-contornam isso. Busca por `code` sai antes de qualquer validação.
-
-**`guidance` no retorno da tool.** `PropertySearchResult` carrega
-`properties` **e** um texto imperativo (`FOUND`, `NOTHING_FOUND`,
-`SEARCH_BUDGET_SPENT`). Com lista vazia e nada mais, o modelo tende a "ajudar"
-alargando filtros por conta própria. A instrução do system prompt está longe, no
-início do contexto; a `guidance` chega junto com o resultado, no momento exato
-da decisão.
-
-**Exclusão incondicional do que já foi recomendado.** Toda busca — inclusive por
-código — aplica `.exclude(id__in=already_recommended)`. O modelo não tem como
-repetir um imóvel porque nunca chega a vê-lo.
-
-**`conversation_id` vem do `RunContextWrapper[AssistantDeps]`, nunca do
-modelo.** Se fosse parâmetro da tool, o modelo poderia alucinar um número e ler
-as recomendações de outro cliente.
-
-**`MAX_RESULTS = 2`** é fatiamento de queryset, não pedido no prompt.
-
-**`MAX_SEARCHES_PER_RUN = 3`**, contado em `AssistantDeps.searches_done`: teto de
-buscas por mensagem. Ao estourar, a tool degrada (devolve `SEARCH_BUDGET_SPENT`)
-em vez de falhar — o cliente recebe o que já foi encontrado.
-
-**FAQ: o arquivo inteiro.** São 10 entradas, cabem no contexto
-de qualquer modelo atual.  o contexto completo garante que o modelo tem a informação se ela
-existir. `_load_faq()` é `@lru_cache(maxsize=1)` e valida via `FaqEntry` na
-leitura.
-
----
-
-## 4. Módulo de importação
-
-`properties/importers/`.
-
-### Template Method sobre base abstrata
-
-```python
-class PropertyImporter(ABC):
-    source: str
-
-    @abstractmethod
-    def extract(self) -> Iterator[Any]: ...            # varia por formato
-
-    @abstractmethod
-    def transform(self, raw: Any) -> PropertyData: ...  # varia por formato
-
-    @final
-    def load(self) -> ImportResult: ...                 # não varia
+```mermaid
+stateDiagram-v2
+    [*] --> active: primeira mensagem do cliente
+    active --> closed: sem atividade há INACTIVITY_TIMEOUT_HOURS
+    closed --> active: nova mensagem do cliente
 ```
 
-`extract` e `transform` mudam entre formatos. `load` — upsert por `code`,
-contagem de criados/atualizados/ignorados, coleta de erros — é idêntico para
-qualquer fonte, e por isso é `@final`: um importador novo **não pode**
-reimplementar a idempotência da carga e divergir dos demais.
+**Início.** `Conversation` nasce `active` no primeiro `register_message`
+(`get_or_create` por `user_phone`). A conversa no provider é aberta
+preguiçosamente na primeira task, não na ingestão: o webhook precisa aceitar a
+mensagem mesmo com o provider fora do ar.
 
-Adicionar XML é escrever duas funções. `etl/xml.py` e `etl/api_rest.py` já estão
-no repositório como esqueletos com as assinaturas corretas — prova executável de
-que a extensão cabe sem tocar em `base.py` nem nos importadores atuais.
+**Fim.** O beat varre e `close_inactive_conversations` marca `closed` e grava a
+`CLOSING_MESSAGE` — sumir calado deixaria o cliente esperando resposta.
 
-### Fronteira tipada
+- **O relógio é `Max(messages.created_at)`**, o horário do nosso `INSERT`. Não
+  `last_message_at`: ele carrega o `timestamp` do provedor, que pode vir
+  repetido e ficar congelado no passado enquanto o cliente digita. Não
+  `updated_at`: só muda quando o timestamp avança.
+- **Conversa que nunca recebeu mensagem** envelhece pelo próprio `created_at`;
+  sem esse ramo ficaria ativa para sempre.
+- **A `CLOSING_MESSAGE` é gravada direto no model**, não por `register_message`:
+  não é atividade do atendimento, então não move `last_message_at` nem reabre a
+  conversa que acabou de ser fechada.
 
-`extract` devolve `Any` — é dado externo não confiável, fingir que tem tipo seria
-mentira. `transform` devolve `PropertyData` (Pydantic): o ponto exato em que o
-dado deixa de ser "coisa de arquivo" e vira domínio.
-
-### Parsers compartilhados e tolerância a erro
-
-`etl/parsers.py` concentra `parse_price`, `parse_bedrooms`,
-`parse_transaction_type` e `split_code_from_description`. CSV e JSON usam os
-mesmos parsers; a única diferença real é o regex do código (`codigo: X` no CSV,
-`ref: X` no JSON), isolado como atributo de classe.
-
-Cada parser levanta `ValueError` com o valor original; `load` captura, registra
-em `ImportResult.errors`, incrementa `skipped` e segue para o próximo registro —
-um imóvel malformado não derruba a carga inteira.
-
-No nível acima, `import_all_properties` isola as fontes entre si: um XML de
-parceiro fora do ar não impede a carga do CSV interno.
-
-### Ponto único de registro
-
-`properties/services.active_importers()` é a única lista de fontes ativas. A
-task do Celery e o management command chamam essa mesma função — qual fonte
-entra na carga não pode divergir entre os dois caminhos.
-
-A task é registrada por `name=` explícito (`"properties.load_properties"`), não
-pelo caminho do módulo: mover o arquivo não quebra o agendamento em silêncio.
+**Reabertura.** Mensagem nova do cliente em conversa `closed` volta o status
+para `active` e zera `external_conversation_id` — é esse `NULL` que faz o
+próximo run abrir uma thread nova no provider, em vez de atender em cima de um
+contexto encerrado. Só papel `customer` reabre (senão a própria mensagem de
+encerramento reabriria); reentrega não reabre. O corte do histórico sai de
+graça: `get_recent_messages` parte da última mensagem do assistente, que é
+justamente a de encerramento.
 
 ---
 
-## 5. Regra de debounce
+## 5. Debounce
 
 Requisito: mensagens em até 10s na mesma conversa geram **um** processamento.
 
-**Solução: countdown + verificação de supersessão.**
-
 ```python
-# ao receber cada mensagem
-process_conversation.apply_async(
-    kwargs={"conversation_id": ..., "trigger_message_id": ...},
-    countdown=settings.DEBOUNCE_WINDOW_SECONDS,   # 10
-)
+# a cada mensagem recebida
+process_conversation.apply_async(..., countdown=settings.DEBOUNCE_WINDOW_SECONDS)
 
-# ao executar, 10s depois
+# 10s depois, ao executar
 if has_newer_customer_message(conversation_id=..., message_id=trigger_id):
-    return  # outra mensagem chegou depois; a task dela é que responde
+    return  # a task da mensagem mais recente é que responde
 ```
 
-Três mensagens rápidas agendam três tasks. As duas primeiras acordam, veem que
-há mensagem de cliente mais recente e retornam sem fazer nada. A terceira
-processa, com as três mensagens no histórico. Uma resposta.
+Três mensagens rápidas agendam três tasks: as duas primeiras veem mensagem mais
+nova e retornam; a terceira processa e, como nenhuma resposta entrou no meio, as
+três vão juntas ao modelo. Uma resposta.
 
-**Custo:** N tasks para N mensagens, sendo N-1 no-ops. São tasks baratas (um
-`EXISTS` com índice) e o volume de rajada é o de um humano digitando.
-
----
-
-## 6. Garantia de idempotência
-
-Idempotência aparece em quatro pontos, e em nenhum deles depende de um `if` em
-Python conferindo antes do `INSERT` — a garantia sempre vem do banco ou de uma
-operação atômica, nunca de uma checagem em código que pode perder a corrida.
-
-**1. Ingestão da mensagem (banco).** `Message.external_id` é
-`UUIDField(unique=True)`. `register_message` usa `get_or_create` e devolve
-`MessageIngestion(message, conversation, created)`. Reentrega do provedor volta
-`created=False`, a view responde `"ignored"` e **não enfileira nada** — sem essa
-guarda, uma reentrega dispararia um segundo processamento de IA para uma
-mensagem já respondida. Não há janela de corrida entre o "já existe?" e o
-`INSERT`: quem garante isso é a constraint, não uma verificação prévia.
-
-**2. Conversa (banco).** `Conversation.user_phone` é `unique`, então
-`get_or_create` é seguro sob concorrência — duas mensagens simultâneas do mesmo
-cliente não criam duas conversas.
-
-**3. Execução da task (Redis).** `process_conversation` abre com
-`cache.add(f"lock:{conversation_id}-{trigger_message_id}", "true", 15)`. `add` é
-atômico: só o primeiro a chegar recebe `True`. Se a mesma task for reentregue
-pelo broker (ACK perdido, worker reiniciado) enquanto a original ainda roda, a
-segunda desiste. O lock tem TTL de 15s e é liberado num `finally`.
-
-**4. Carga de imóveis (banco).** `Property.objects.update_or_create(code=...)`.
-Carga repetida atualiza, nunca duplica; a garantia final é a `unique` em `code`.
-A escolha por **atualizar**, em vez de ignorar duplicatas, é deliberada: preço e
-disponibilidade mudam entre cargas, e um registro desatualizado faria o
-assistente informar preço errado — o pior tipo de erro possível neste domínio.
-
-**Recomendação (banco).** Mesmo padrão: o `UniqueConstraint(conversation,
-property)` faz uma segunda tentativa de registrar o mesmo imóvel na mesma
-conversa não criar linha nova, sem exigir checagem em Python.
+**Custo aceito:** N tasks para N mensagens, N-1 no-ops. São `EXISTS` com índice,
+e o volume de rajada é o de um humano digitando.
 
 ---
 
-## 7. Trade-offs assumidos
+## 6. Idempotência
 
-| Decisão                              | Ganho                                       | Custo aceito                                    |
-| ------------------------------------ | ------------------------------------------- | ----------------------------------------------- |
-| Debounce por countdown + supersessão | Sem estado extra, simples de depurar        | N-1 tasks no-op; janela não atômica             |
-| Uma tabela para todos os imóveis     | Busca simples e rápida                      | Campos específicos de fonte não têm onde morar  |
-| FAQ inteiro no contexto              | Zero infra, sem falso negativo de busca     | Não escala além de ~centenas de entradas        |
-| Fallback em vez de propagar erro     | Cliente sempre recebe resposta              | Falha do modelo fica visível só em log          |
+Nenhum dos pontos depende de um `if` em Python antes do `INSERT`: a garantia vem
+sempre do banco ou de uma operação atômica.
+
+| Ponto                  | Mecanismo                                          | Efeito                                                   |
+| ----------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| Ingestão da mensagem    | `external_id` `unique` + `get_or_create`           | reentrega responde `"ignored"` e não dispara a IA         |
+| Conversa                | `user_phone` `unique` + `get_or_create`            | mensagens simultâneas não criam duas conversas            |
+| Execução da task        | `cache.add(lock, ttl=15s)`, liberado no `finally`  | reentrega do broker desiste                               |
+| Recomendação            | `UniqueConstraint(conversation, property)`         | o mesmo imóvel não entra duas vezes na conversa           |
+| Carga de imóveis        | `update_or_create(code=...)`                       | recarga atualiza (preço muda), nunca duplica              |
 
 ---
 
-## 8. Limitações conhecidas
+## 7. Regras determinísticas do assistente
 
-1. **Sem retry configurado nas tasks.** Falha de rede na chamada ao LLM cai
-   direto no fallback; 
+Princípio: **regra verificável vive no código, não no prompt.** Prompt
+influencia; código garante.
+
+- **Filtros obrigatórios.** Sem `code`, faltando tipo de transação, bairro ou um
+  filtro de preço, `search_properties` devolve **zero imóveis** e um `guidance`
+  dizendo o que perguntar. Nem reformulação de prompt nem alucinação contornam.
+- **`MAX_RESULTS = 2`** é fatiamento de queryset, não pedido no prompt.
+- **Exclusão do já recomendado** (`.exclude(id__in=...)`) em toda busca,
+  inclusive por código: o modelo não repete um imóvel porque nunca o vê.
+- **`MAX_SEARCHES_PER_RUN = 3`**, contado em `AssistantDeps.searches_done`. Ao
+  estourar, a tool degrada (`SEARCH_BUDGET_SPENT`) em vez de falhar.
+- **`conversation_id` vem do `RunContextWrapper`, nunca do modelo** — como
+  parâmetro de tool, um id alucinado leria a recomendação de outro cliente.
+- **`guidance` junto do resultado:** a instrução do system prompt está longe, no
+  início do contexto; a orientação chega no momento da decisão.
+- **FAQ inteiro no contexto** (10 entradas, `@lru_cache`, validado por
+  `FaqEntry`): zero infra de busca e nenhum falso negativo.
+- **Saída validada** (`output_type=AgentReply`): o que o LLM devolve só vira
+  registro depois de passar pelo Pydantic.
+
+---
+
+## 8. ETL de imóveis
+
+- **Template Method.** `PropertyImporter` (ABC): `extract` e `transform` variam
+  por formato; `load` — upsert por `code`, contagem, coleta de erros — é
+  `@final`, para que um importador novo não reimplemente a idempotência da carga.
+- **Fronteira tipada.** `extract` devolve `Any` (dado externo não confiável);
+  `transform` devolve `PropertyData` (Pydantic) — o ponto em que vira domínio.
+- **Tolerância a erro.** Parser levanta `ValueError`, `load` registra em
+  `errors`, incrementa `skipped` e segue: um imóvel malformado não derruba a
+  carga. `import_all_properties` isola as fontes entre si.
+- **Ponto único de registro.** `active_importers()` é a única lista de fontes
+  ativas; task e management command chamam a mesma função.
+- **Extensão provada.** `etl/xml.py` e `etl/api_rest.py` são esqueletos com as
+  assinaturas corretas: adicionar fonte não toca em `base.py`.
+- Tasks registradas por `name=` explícito: mover o módulo não quebra o
+  agendamento em silêncio.
+
+---
+
+## 9. Trade-offs assumidos
+
+| Decisão                               | Ganho                                     | Custo aceito                                  |
+| -------------------------------------- | ------------------------------------------ | ----------------------------------------------- |
+| Uma tabela para todos os imóveis      | busca simples e rápida                    | campo específico de fonte não tem onde morar  |
+| FAQ inteiro no contexto               | zero infra, sem falso negativo            | não escala além de ~centenas de entradas      |
+| Fallback em vez de propagar erro      | cliente sempre recebe resposta            | falha do modelo só aparece em log             |
+| Reabertura descarta a thread anterior | atendimento novo começa limpo             | contexto da conversa anterior não volta       |
+| N tasks para N mensagens (debounce)   | rajada vira uma resposta só               | N-1 execuções no-op                           |

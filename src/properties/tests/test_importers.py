@@ -1,8 +1,8 @@
-"""Importadores CSV e JSON.
+"""CSV and JSON importers.
 
-O contrato de um importador tem três partes: mapear o registro da fonte para o
-domínio, ser idempotente (recarregar não duplica nem congela dado velho) e
-tolerar registro ruim sem derrubar a carga inteira.
+An importer contract has three parts: map the source record onto the domain, be
+idempotent (reloading neither duplicates nor freezes stale data) and tolerate a
+bad record without bringing the whole load down.
 """
 
 from decimal import Decimal
@@ -24,45 +24,45 @@ WriteJson = Callable[..., Path]
 JsonRecord = Callable[..., dict[str, Any]]
 
 
-class TestCSVMapeamento:
-    def test_mapeia_todos_os_campos_do_registro(
+class TestCSVMapping:
+    def test_maps_every_field_of_the_record(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         CSVPropertyImporter(write_csv(csv_row())).load()
 
-        imovel = Property.objects.get()
-        assert imovel.code == "IMV-001"
-        assert imovel.transaction_type == TransactionType.RENT
-        assert imovel.neighborhood == "Boa Viagem"
-        assert imovel.price == Decimal("2500")
-        assert imovel.bedrooms == 2
-        assert imovel.address == "Rua dos Navegantes, 150"
+        property_ = Property.objects.get()
+        assert property_.code == "IMV-001"
+        assert property_.transaction_type == TransactionType.RENT
+        assert property_.neighborhood == "Boa Viagem"
+        assert property_.price == Decimal("2500")
+        assert property_.bedrooms == 2
+        assert property_.address == "Rua dos Navegantes, 150"
 
-    def test_extrai_o_codigo_e_o_remove_da_descricao(
+    def test_extracts_the_code_and_strips_it_from_the_description(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
-        """O código vira coluna própria; a descrição que o cliente lê não repete."""
+        """The code becomes its own column; the description the customer reads does not repeat it."""
 
         CSVPropertyImporter(
             write_csv(csv_row(descricao="Ótimo imóvel. codigo:IMV-042"))
         ).load()
 
-        imovel = Property.objects.get()
-        assert imovel.code == "IMV-042"
-        assert imovel.description == "Ótimo imóvel"
+        property_ = Property.objects.get()
+        assert property_.code == "IMV-042"
+        assert property_.description == "Ótimo imóvel"
 
-    def test_registra_a_origem_da_carga(
+    def test_records_the_origin_of_the_load(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         file_path = write_csv(csv_row())
 
         CSVPropertyImporter(file_path).load()
 
-        imovel = Property.objects.get()
-        assert imovel.source == PropertySource.CSV
-        assert imovel.imported_at is not None
+        property_ = Property.objects.get()
+        assert property_.source == PropertySource.CSV
+        assert property_.imported_at is not None
 
-    def test_arquivo_com_apenas_o_cabecalho_nao_grava_nada(
+    def test_a_file_with_only_the_header_stores_nothing(
         self, write_csv: WriteCsv,
     ) -> None:
         result = CSVPropertyImporter(write_csv()).load()
@@ -71,34 +71,34 @@ class TestCSVMapeamento:
         assert Property.objects.count() == 0
 
 
-class TestJSONMapeamento:
-    def test_mapeia_o_registro_e_extrai_o_codigo_pelo_prefixo_ref(
+class TestJSONMapping:
+    def test_maps_the_record_and_extracts_the_code_from_the_ref_prefix(
         self, write_json: WriteJson, json_record: JsonRecord,
     ) -> None:
-        """O JSON usa ``ref:`` onde o CSV usa ``codigo:`` — só o padrão muda."""
+        """The JSON uses ``ref:`` where the CSV uses ``codigo:`` — only the pattern changes."""
 
         JSONPropertyImporter(write_json([json_record()])).load()
 
-        imovel = Property.objects.get()
-        assert imovel.code == "C011"
-        assert imovel.description == "Apartamento com 2 quartos"
-        assert imovel.neighborhood == "Espinheiro"
-        assert imovel.source == PropertySource.JSON
+        property_ = Property.objects.get()
+        assert property_.code == "C011"
+        assert property_.description == "Apartamento com 2 quartos"
+        assert property_.neighborhood == "Espinheiro"
+        assert property_.source == PropertySource.JSON
 
-    def test_aceita_preco_numerico(
+    def test_accepts_a_numeric_price(
         self, write_json: WriteJson, json_record: JsonRecord,
     ) -> None:
         JSONPropertyImporter(write_json([json_record(preco=850000)])).load()
 
         assert Property.objects.get().price == Decimal("850000")
 
-    def test_lista_vazia_nao_grava_nada(self, write_json: WriteJson) -> None:
+    def test_an_empty_list_stores_nothing(self, write_json: WriteJson) -> None:
         result = JSONPropertyImporter(write_json([])).load()
 
         assert result.total_processed == 0
         assert Property.objects.count() == 0
 
-    def test_payload_que_nao_e_lista_falha_com_mensagem_clara(
+    def test_a_payload_that_is_not_a_list_fails_with_a_clear_message(
         self, write_json: WriteJson,
     ) -> None:
         importer = JSONPropertyImporter(write_json({"imoveis": []}))
@@ -106,7 +106,7 @@ class TestJSONMapeamento:
         with pytest.raises(ValueError, match="esperado uma lista"):
             importer.load()
 
-    def test_item_que_nao_e_objeto_falha_com_mensagem_clara(
+    def test_an_item_that_is_not_an_object_fails_with_a_clear_message(
         self, write_json: WriteJson,
     ) -> None:
         importer = JSONPropertyImporter(write_json(["IMV-001"]))
@@ -115,10 +115,10 @@ class TestJSONMapeamento:
             importer.load()
 
 
-class TestIdempotencia:
-    """Recarregar a mesma fonte atualiza; nunca duplica."""
+class TestIdempotence:
+    """Reloading the same source updates; it never duplicates."""
 
-    def test_carga_repetida_nao_duplica_registros(
+    def test_a_repeated_load_does_not_duplicate_records(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         importer = CSVPropertyImporter(
@@ -131,21 +131,21 @@ class TestIdempotencia:
 
         assert Property.objects.count() == 2
 
-    def test_conta_criados_na_primeira_carga_e_atualizados_na_segunda(
+    def test_counts_created_on_the_first_load_and_updated_on_the_second(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         importer = CSVPropertyImporter(write_csv(csv_row()))
 
-        primeira = importer.load()
-        segunda = importer.load()
+        first = importer.load()
+        second = importer.load()
 
-        assert (primeira.created, primeira.updated) == (1, 0)
-        assert (segunda.created, segunda.updated) == (0, 1)
+        assert (first.created, first.updated) == (1, 0)
+        assert (second.created, second.updated) == (0, 1)
 
-    def test_recarga_atualiza_o_registro_existente(
+    def test_a_reload_updates_the_existing_record(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
-        """Preço muda; um registro velho faria o assistente informar valor errado."""
+        """Prices change; a stale record would make the assistant quote the wrong value."""
 
         CSVPropertyImporter(write_csv(csv_row(preco="2500"))).load()
 
@@ -154,21 +154,21 @@ class TestIdempotencia:
         assert Property.objects.get().price == Decimal("2900")
         assert Property.objects.count() == 1
 
-    def test_a_recarga_atualiza_o_carimbo_de_importacao(
+    def test_a_reload_updates_the_import_timestamp(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         importer = CSVPropertyImporter(write_csv(csv_row()))
         importer.load()
-        primeiro_carimbo = Property.objects.get().imported_at
-        assert primeiro_carimbo is not None
+        first_timestamp = Property.objects.get().imported_at
+        assert first_timestamp is not None
 
         importer.load()
 
-        segundo_carimbo = Property.objects.get().imported_at
-        assert segundo_carimbo is not None
-        assert segundo_carimbo > primeiro_carimbo
+        second_timestamp = Property.objects.get().imported_at
+        assert second_timestamp is not None
+        assert second_timestamp > first_timestamp
 
-    def test_mesmo_codigo_em_fontes_diferentes_nao_duplica(
+    def test_the_same_code_from_different_sources_does_not_duplicate(
         self, write_csv: WriteCsv, csv_row: CsvRow,
         write_json: WriteJson, json_record: JsonRecord,
     ) -> None:
@@ -180,17 +180,17 @@ class TestIdempotencia:
         CSVPropertyImporter(csv_path).load()
         JSONPropertyImporter(json_path).load()
 
-        imovel = Property.objects.get()
+        property_ = Property.objects.get()
         assert Property.objects.count() == 1
-        # A última carga vence, e o rastro de origem diz de onde veio o valor atual.
-        assert imovel.price == Decimal("9999")
-        assert imovel.source == PropertySource.JSON
+        # The last load wins, and the origin trail says where the current value came from.
+        assert property_.price == Decimal("9999")
+        assert property_.source == PropertySource.JSON
 
 
-class TestRegistroInvalido:
-    """Um registro ruim é ignorado e contabilizado; a carga continua."""
+class TestInvalidRecord:
+    """A bad record is skipped and counted; the load carries on."""
 
-    def test_registro_sem_codigo_e_ignorado_sem_derrubar_a_carga(
+    def test_a_record_without_a_code_is_skipped_without_breaking_the_load(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         result = CSVPropertyImporter(
@@ -204,7 +204,7 @@ class TestRegistroInvalido:
         assert len(result.errors) == 1
         assert Property.objects.get().code == "IMV-009"
 
-    def test_tipo_de_negocio_desconhecido_e_ignorado(
+    def test_an_unknown_transaction_type_is_skipped(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         result = CSVPropertyImporter(write_csv(csv_row(tipo="permuta"))).load()
@@ -213,16 +213,16 @@ class TestRegistroInvalido:
         assert Property.objects.count() == 0
         assert "tipo_negocio" in result.errors[0]
 
-    @pytest.mark.parametrize("preco", ["", "sob consulta", "R$ 2.500"])
-    def test_preco_invalido_e_ignorado(
-        self, write_csv: WriteCsv, csv_row: CsvRow, preco: str,
+    @pytest.mark.parametrize("price", ["", "sob consulta", "R$ 2.500"])
+    def test_an_invalid_price_is_skipped(
+        self, write_csv: WriteCsv, csv_row: CsvRow, price: str,
     ) -> None:
-        result = CSVPropertyImporter(write_csv(csv_row(preco=preco))).load()
+        result = CSVPropertyImporter(write_csv(csv_row(preco=price))).load()
 
         assert result.skipped == 1
         assert Property.objects.count() == 0
 
-    def test_quartos_invalido_e_ignorado(
+    def test_an_invalid_bedroom_count_is_skipped(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         result = CSVPropertyImporter(write_csv(csv_row(quartos="dois"))).load()
@@ -230,10 +230,10 @@ class TestRegistroInvalido:
         assert result.skipped == 1
         assert Property.objects.count() == 0
 
-    def test_coluna_ausente_e_tratada_como_registro_ignorado(
+    def test_a_missing_column_is_treated_as_a_skipped_record(
         self, write_csv: WriteCsv,
     ) -> None:
-        """Cabeçalho sem ``bairro``: ``KeyError`` vira registro ignorado, não crash."""
+        """Header without ``bairro``: the ``KeyError`` becomes a skipped record, not a crash."""
 
         file_path = write_csv(
             'aluguel,2500,2,"Rua X, 1","Apto. codigo:IMV-001"\n',
@@ -245,7 +245,7 @@ class TestRegistroInvalido:
         assert result.skipped == 1
         assert Property.objects.count() == 0
 
-    def test_registro_ruim_nao_impede_os_seguintes(
+    def test_a_bad_record_does_not_block_the_following_ones(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         result = CSVPropertyImporter(
@@ -260,7 +260,7 @@ class TestRegistroInvalido:
         assert (result.created, result.skipped) == (2, 2)
         assert set(Property.objects.values_list("code", flat=True)) == {"B-2", "D-4"}
 
-    def test_o_erro_registrado_identifica_o_registro_problematico(
+    def test_the_recorded_error_identifies_the_problematic_record(
         self, write_csv: WriteCsv, csv_row: CsvRow,
     ) -> None:
         result = CSVPropertyImporter(
@@ -271,21 +271,21 @@ class TestRegistroInvalido:
         assert "Imóvel sem código" in result.errors[0]
 
 
-class TestArquivosReaisDoDesafio:
-    def test_as_duas_fontes_carregam_e_se_mesclam_numa_tabela(
+class TestRealChallengeFiles:
+    def test_both_sources_load_and_merge_into_one_table(
         self, settings: Any,
     ) -> None:
-        """Fumaça sobre os dados versionados: 10 do CSV + 10 do JSON, sem colisão."""
+        """Smoke test over the versioned data: 10 from the CSV + 10 from the JSON, no collision."""
 
         CSVPropertyImporter(settings.PROPERTIES_CSV_PATH).load()
         JSONPropertyImporter(settings.PROPERTIES_JSON_PATH).load()
 
-        codigos = list(Property.objects.values_list("code", flat=True))
-        assert len(codigos) == len(set(codigos)) == 20
+        codes = list(Property.objects.values_list("code", flat=True))
+        assert len(codes) == len(set(codes)) == 20
         assert Property.objects.filter(source=PropertySource.CSV).count() == 10
         assert Property.objects.filter(source=PropertySource.JSON).count() == 10
 
-    def test_nenhuma_descricao_carrega_a_marcacao_de_codigo(
+    def test_no_description_carries_the_code_marker(
         self, settings: Any,
     ) -> None:
         CSVPropertyImporter(settings.PROPERTIES_CSV_PATH).load()
